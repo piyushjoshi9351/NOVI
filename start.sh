@@ -38,4 +38,4 @@ echo "✨ Starting NOVI server..."
 echo "   Open http://localhost:8000 in your browser"
 echo ""
 cd backend
-uvicorn main:app --reload --host 0.0.0.0 --port 8000
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
