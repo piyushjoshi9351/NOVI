@@ -147,17 +147,6 @@ export function RootShell({ children }) {
   );
 }
 
-export function HomeRedirect() {
-  const { user, token, ready } = useAuth();
-  const router = useRouter();
-  useEffect(() => {
-    if (!ready) return;
-    if (!token || !user) { router.replace("/dashboard"); return; }
-    router.replace(user.role === "parent" ? "/overview" : "/dashboard");
-  }, [ready, token, user, router]);
-  return null;
-}
-
 export default function AppShell({ children }) {
   return (
     <AuthProvider>

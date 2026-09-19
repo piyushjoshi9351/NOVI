@@ -1,8 +1,4 @@
-import Script from "next/script";
-import AppShell from "../src/Shell";
-import "../static/styles.css";
-import "../src/views/planner/planner.css";
-import "../src/views/checkin.css";
+import { AuthProvider } from "../src/auth";
 
 export const viewport = {
   themeColor: "#060a13",
@@ -20,11 +16,15 @@ export const metadata = {
 export default function RootLayout({ children }) {
   return (
     <html lang="en">
-      <Script id="theme-init" strategy="beforeInteractive">
-        {`(function(){try{var p=JSON.parse(localStorage.getItem("novi_prefs")||"{}")||{};var t=p.theme;if(t!=="light"&&t!=="dark"){t=(window.matchMedia&&window.matchMedia("(prefers-color-scheme: light)").matches)?"light":"dark";}document.documentElement.setAttribute("data-theme",t);var m=document.querySelector('meta[name="theme-color"]');if(m)m.setAttribute("content",t==="light"?"#f3f5fb":"#060a13");}catch(e){document.documentElement.setAttribute("data-theme","dark");}})();`}
-      </Script>
+      <head>
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `(function(){try{var p=JSON.parse(localStorage.getItem("novi_prefs")||"{}")||{};var t=p.theme;if(t!=="light"&&t!=="dark"){t=(window.matchMedia&&window.matchMedia("(prefers-color-scheme: light)").matches)?"light":"dark";}document.documentElement.setAttribute("data-theme",t);var m=document.querySelector('meta[name="theme-color"]');if(m)m.setAttribute("content",t==="light"?"#f3f5fb":"#060a13");}catch(e){document.documentElement.setAttribute("data-theme","dark");}})();`,
+          }}
+        />
+      </head>
       <body>
-        <AppShell>{children}</AppShell>
+        <AuthProvider>{children}</AuthProvider>
       </body>
     </html>
   );
