@@ -235,14 +235,16 @@ by `backend/.env`:
 | `LETTA_BASE_URL` / `LETTA_ENABLED` | `http://localhost:8283` / `true` | Memory server |
 | `LETTA_MODEL` | `ollama/llama3.2:3b` | Model driving each agent |
 
-### 1.4 Frontend: two bundles
+### 1.4 Frontend: Next.js app + legacy bundle
 
-- **Served app**: `frontend/index.html` loads the single-file legacy bundle
-  `frontend/static/app.js` (plain JS, no module system) plus `frontend/static/styles.css`.
-  This is what actually runs in the browser (paths `/` and `/static/*`).
-- **React tree**: `frontend/src/` (React 18 + Vite) exists as the newer rewrite
-  (`frontend/src/pages/RoadmapPage.jsx`, etc.) but is **not** the deployed bundle; keep
-  feature work in sync with both where applicable.
+- **Next.js app (current)**: `frontend/` is a Next.js (App Router) React app — a client-side
+  SPA for auth/API (token in `localStorage`, `next.config.mjs` proxies `/api/*` and
+  `/static/*` to the backend). Routes live in `frontend/app/` as thin gated wrappers around
+  the page components in `frontend/src/views/`. Run with `npm --prefix frontend run dev`
+  (http://localhost:3000) or `next build && next start` for production.
+- **Legacy bundle**: the backend also serves the single-file vanilla bundle
+  (`frontend/index.html` no longer exists — the legacy JS `frontend/static/app.js` + CSS
+  remain under `frontend/static/` and are served by FastAPI at `/` and `/static/*`).
 
 ### 1.5 Resilience & fallbacks
 

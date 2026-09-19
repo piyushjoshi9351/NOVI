@@ -4,10 +4,8 @@ import { api, clearApiCache, setApiToken, resetWarmAll } from "./api";
 const AuthCtx = createContext(null);
 
 export function AuthProvider({ children }) {
-  const [token, setToken] = useState(() => localStorage.getItem("novi_token") || null);
-  const [user, setUser] = useState(() => {
-    try { return JSON.parse(localStorage.getItem("novi_user") || "null"); } catch (_) { return null; }
-  });
+  const [token, setToken] = useState(null);
+  const [user, setUser] = useState(null);
   const [ready, setReady] = useState(false);
 
   const login = (tk, u) => {
@@ -36,11 +34,17 @@ export function AuthProvider({ children }) {
   };
 
   useEffect(() => {
-    if (!token) { setReady(true); return; }
-    setApiToken(token);
+    if (typeof window === "undefined") return;
+    const tk = window.localStorage.getItem("novi_token");
+    let u = null;
+    try { u = JSON.parse(window.localStorage.getItem("novi_user") || "null"); } catch (_) {}
+    if (!tk) { setReady(true); return; }
+    setApiToken(tk);
+    setToken(tk);
+    setUser(u);
     api("/auth/me")
       .then((me) => {
-        localStorage.setItem("novi_user", JSON.stringify(me));
+        window.localStorage.setItem("novi_user", JSON.stringify(me));
         setUser(me);
       })
       .catch(() => { logout(); })
