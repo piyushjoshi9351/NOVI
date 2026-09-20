@@ -55,6 +55,12 @@ from app.api import google_auth  # noqa: E402
 
 app.include_router(google_auth.router, prefix="/api", include_in_schema=False)
 
+# Internal, service-to-service onboarding endpoints (called by the registered
+# LettA tools). Mounted at the unversioned root and kept out of the public docs.
+from app.routers.internal_onboarding import router as internal_onboarding_router  # noqa: E402
+
+app.include_router(internal_onboarding_router, include_in_schema=False)
+
 if FRONTEND_DIR.exists():
     app.mount("/static", StaticFiles(directory=str(FRONTEND_DIR / "static")), name="static")
 

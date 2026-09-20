@@ -260,6 +260,38 @@ by `backend/.env`:
 - **Dedup**: archival dedup is never authoritative-blocking — if the dedup check itself
   fails it proceeds to save.
 
+### 1.6 Onboarding engine (`ONBOARDING_ENGINE`)
+
+The app has two onboarding engines and mounts **exactly one** of them at startup, chosen by
+the `ONBOARDING_ENGINE` environment variable (default **`legacy`** — unset means the flow + voice engine):
+
+| `ONBOARDING_ENGINE` | What gets mounted                              | Frontend behind `/onboarding` |
+|---------------------|------------------------------------------------|-------------------------------|
+| `legacy` (default)  | Flow + voice engine at `/api/v1/onboarding/*`  | `/onboarding/flow` API        |
+| `new`               | Conversational engine at `/api/v1/onboarding/*` | `OnboardingChat` (new UI)    |
+
+- **Flow + voice engine (default)**: `app/api/onboarding.py` → `app/services/onboarding_flow.py`
+  serves the scripted flow at `GET /api/v1/onboarding/flow`, `POST /flow/start|answer|skip|reset`,
+  plus the voice routes `POST /api/v1/onboarding/voice/speak`, `POST /voice/transcribe` and
+  `POST /voice/answer`. The voice routes use ElevenLabs (`ELEVENLABS_API_KEY`,
+  `ELEVENLABS_VOICE_ID`, `ELEVENLABS_MODEL_ID`) with Gemini fallback resolution; without
+  ElevenLabs keys the `/voice/*` endpoints return `502`.
+- **TTS fallback**: the onboarding frontend (`speech.js`) plays each question via
+  `/voice/speak` (ElevenLabs) and, whenever that API is unavailable (missing/expired key,
+  non-2xx incl. `402`, empty/non-audio response), falls back to the browser's Web Speech
+  API (`window.speechSynthesis`). No key or payment needed for the fallback to work.
+- **Conversational engine (opt-in)**: set `ONBOARDING_ENGINE=new`. It reads the
+  `ONBOARDING_STEPS` registry (`app/onboarding/steps.py`) and serves `GET /state`,
+  `POST /answer` and the reference catalog endpoints (`/countries`, `/curriculums`, `/grades`,
+  `/subjects`). The `OnboardingChat` component calls `/state` on mount (it never assumes step 1),
+  renders one question at a time, and re-renders from each `/answer` response until
+  `{ "completed": true }`, where it redirects to `/dashboard`.
+
+Switching engines is a config change: set `ONBOARDING_ENGINE` (`backend/.env`, or the root
+`.env` for Docker Compose) and redeploy. The parallel engine's code, DB tables and the old
+frontend view (`frontend/src/views/OnboardingPage.jsx`, which drives the `/onboarding/flow` API)
+are all kept in the repo.
+
 ---
 
 ## 2. Database Schema

@@ -2018,3 +2018,63 @@ textarea.sheet-input { resize: vertical; }
 
 .spin { animation: obSpin 0.85s linear infinite; }
 @keyframes obSpin { to { transform: rotate(360deg); } }
+
+/* ============ conversational onboarding inputs ============ */
+.ob-input {
+  flex: 1; min-width: 0;
+  background: var(--panel-solid); border: 1px solid var(--border); color: var(--text);
+  border-radius: 12px; padding: 12px 15px; font: inherit; font-size: 14px; outline: none;
+  transition: border-color 0.14s ease, box-shadow 0.14s ease, background 0.14s ease;
+}
+.ob-input::placeholder { color: var(--muted); }
+.ob-input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(139, 108, 255, 0.18); }
+.ob-input:disabled { opacity: 0.6; cursor: not-allowed; }
+
+.ob-custom-wrap { padding: 2px 4px 0; }
+.ob-custom-wrap .ob-input { background: var(--panel); }
+
+/* searchable select (country step etc. — always option-driven) */
+.ob-search { display: flex; flex-direction: column; gap: 8px; padding: 2px 4px 0; }
+.ob-search-bar {
+  display: flex; align-items: center; gap: 8px;
+  background: var(--panel-solid); border: 1px solid var(--border); border-radius: 999px;
+  padding: 0 12px; color: var(--muted);
+  transition: border-color 0.14s ease, box-shadow 0.14s ease;
+}
+.ob-search-bar:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(139, 108, 255, 0.18); }
+.ob-search-bar input { flex: 1; min-width: 0; background: transparent; border: 0; box-shadow: none; padding: 11px 4px; font: inherit; font-size: 13.5px; }
+.ob-search-bar input:focus { background: transparent; box-shadow: none; }
+.ob-search-bar input:disabled { opacity: 0.6; cursor: not-allowed; }
+.ob-search-list {
+  display: flex; flex-direction: column; gap: 2px;
+  max-height: 200px; overflow-y: auto;
+  background: var(--panel-2); border: 1px solid var(--border); border-radius: var(--radius-sm);
+  padding: 5px;
+}
+.ob-search-item {
+  display: flex; align-items: center; gap: 9px; text-align: left;
+  background: transparent; border: 0; color: var(--text); font: inherit; font-size: 13.5px; font-weight: 600;
+  padding: 9px 9px; border-radius: 8px; cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+.ob-search-item:hover { background: var(--panel-solid); }
+.ob-search-item[aria-selected="true"] { color: var(--accent); }
+.ob-search-item:disabled { opacity: 0.5; cursor: not-allowed; }
+.ob-search-empty { font-size: 12.5px; color: var(--muted); padding: 10px 6px; text-align: center; }
+
+/* voice mode (additive; typed/tapped flow is untouched) */
+.chat-head-btn.on { color: var(--accent); border-color: var(--accent); background: rgba(139, 108, 255, 0.1); }
+.ob-voicebar { display: flex; align-items: center; gap: 10px; padding: 0 4px; }
+.ob-mic {
+  flex: none; width: 42px; height: 42px; border-radius: 50%;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: var(--panel-2); border: 1px solid var(--border); color: var(--muted);
+  cursor: pointer; transition: color 0.14s ease, border-color 0.14s ease, background 0.14s ease;
+  touch-action: none; user-select: none; -webkit-user-select: none;
+}
+.ob-mic:hover:not(:disabled) { color: var(--text); border-color: var(--border-strong); }
+.ob-mic.rec {
+  background: rgba(248, 113, 113, 0.14); border-color: var(--bad); color: var(--bad);
+  animation: breathe 1.1s ease-in-out infinite;
+}
+.ob-mic:disabled { opacity: 0.45; cursor: not-allowed; }

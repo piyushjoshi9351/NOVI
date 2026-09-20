@@ -3,10 +3,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { ArrowRight, Check, Loader2, Send, Sparkles, X } from "lucide-react";
-import { api, initials } from "../api";
+import { ArrowRight, Check, Loader2, Mic, Send, Sparkles, Volume2, VolumeX, X } from "lucide-react";
+import { api, API, getApiToken, initials } from "../api";
 import { useAuth } from "../auth";
 import { toast } from "../ui";
+import { stopAll, webSpeak } from "../speech";
 
 const GREETING =
   "Hi, I'm Novi 👋\n\nBefore I start helping you, I want to get to know you.\nThere are no right or wrong answers. You don't need to know what you want to become.\nJust be yourself — I'll figure out the rest.";
@@ -21,7 +22,13 @@ export default function OnboardingPage() {
   const [busy, setBusy] = useState(false);
   const [draft, setDraft] = useState("");
   const [selected, setSelected] = useState([]);
+  const [voiceOn, setVoiceOn] = useState(false);
+  const [recording, setRecording] = useState(false);
   const logRef = useRef(null);
+  const audioRef = useRef(null);
+  const speakCtl = useRef(null);
+  const micRef = useRef({ recorder: null, chunks: [], stream: null, cancelled: false });
+  const micHold = useRef(false);
 
   const firstName = user?.first_name?.split(" ")[0] || "there";
 
@@ -58,6 +65,8 @@ export default function OnboardingPage() {
     setDraft("");
   }, [flow?.current?.id]);
 
+  useEffect(() => () => stopAll(), []);
+
   const submit = useCallback(
     async (body) => {
       if (busy) return;
@@ -92,6 +101,176 @@ export default function OnboardingPage() {
       setBusy(false);
     }
   }, [busy, flow, apply]);
+
+  // ---- voice: playback (ElevenLabs, fallback to browser speechSynthesis) ----
+  const playQuestion = useCallback(
+    async (text) => {
+      if (!voiceOn || !text) return;
+      speakCtl.current?.abort();
+      const ctl = new AbortController();
+      speakCtl.current = ctl;
+      const audio = audioRef.current;
+      if (audio) {
+        audio.pause();
+        audio.currentTime = 0;
+      }
+      try {
+        const res = await fetch(`${API}/onboarding/voice/speak`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            ...(getApiToken() ? { Authorization: `Bearer ${getApiToken()}` } : {}),
+          },
+          body: JSON.stringify({ text }),
+          signal: ctl.signal,
+        });
+        if (!res.ok) throw new Error(`voice unavailable (${res.status})`);
+        if (!/audio|octet-stream/i.test(res.headers.get("content-type") || "")) throw new Error("voice returned non-audio");
+        const blob = await res.blob();
+        if (!blob.size) throw new Error("voice returned empty audio");
+        const el = audioRef.current;
+        if (!el) throw new Error("no audio element");
+        const url = URL.createObjectURL(blob);
+        el.onended = () => URL.revokeObjectURL(url);
+        el.onerror = () => URL.revokeObjectURL(url);
+        el.src = url;
+        await el.play();
+      } catch (err) {
+        if (err && err.name === "AbortError") return;
+        if (!ctl.signal.aborted) {
+          toast("Voice playback unavailable", "err");
+          webSpeak(text);
+        }
+      } finally {
+        if (speakCtl.current === ctl) speakCtl.current = null;
+      }
+    },
+    [voiceOn],
+  );
+
+  // Speak the current question whenever voice mode is on and it changes.
+  useEffect(() => {
+    if (voiceOn && flow?.current?.question) playQuestion(flow.current.question);
+  }, [voiceOn, flow?.current?.id, playQuestion]);
+
+  // Turning voice off (or unmounting) cuts playback, in-flight speak and mic.
+  useEffect(() => {
+    if (!voiceOn) {
+      speakCtl.current?.abort();
+      const a = audioRef.current;
+      if (a) {
+        a.pause();
+        a.currentTime = 0;
+      }
+    }
+  }, [voiceOn]);
+
+  useEffect(
+    () => () => {
+      speakCtl.current?.abort();
+      audioRef.current?.pause();
+      if (micRef.current.recorder) micRef.current.recorder.state !== "inactive" && micRef.current.recorder.stop();
+      micRef.current.stream?.getTracks().forEach((t) => t.stop());
+    },
+    [],
+  );
+
+  // ---- voice: mic input (hold-to-talk; barge-in) ----
+  const transcribeVoice = async (blob) => {
+    const fd = new FormData();
+    fd.append("file", blob, "voice.webm");
+    const res = await fetch(`${API}/onboarding/voice/transcribe`, {
+      method: "POST",
+      headers: getApiToken() ? { Authorization: `Bearer ${getApiToken()}` } : {},
+      body: fd,
+    });
+    if (!res.ok) throw new Error("Transcription failed");
+    const data = await res.json();
+    return (data && data.text ? data.text : "").trim();
+  };
+
+  const submitVoice = useCallback(
+    async (transcript) => {
+      if (!flow?.current) return;
+      const res = await api("/onboarding/voice/answer", {
+        method: "POST",
+        body: JSON.stringify({ step_id: flow.current.id, transcript }),
+      });
+      if (res && res.resolved === true) {
+        apply(res);
+      } else if (res) {
+        toast(res.error || "I couldn't understand that — try again", "err");
+      } else {
+        throw new Error("No response from voice answer");
+      }
+    },
+    [flow, apply],
+  );
+
+  const beginMic = useCallback(async () => {
+    if (busy || recording || micHold.current) return;
+    micHold.current = true;
+    const audio = audioRef.current;
+    if (audio) {
+      audio.pause();
+      audio.currentTime = 0;
+    }
+    speakCtl.current?.abort();
+    speakCtl.current = null;
+    setRecording(true);
+    micRef.current = { recorder: null, chunks: [], stream: null, cancelled: false };
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      if (micRef.current.cancelled) {
+        stream.getTracks().forEach((t) => t.stop());
+        micHold.current = false;
+        return;
+      }
+      const recorder = new MediaRecorder(stream);
+      const chunks = [];
+      recorder.ondataavailable = (e) => {
+        if (e.data && e.data.size) chunks.push(e.data);
+      };
+      recorder.onstop = async () => {
+        setRecording(false);
+        try {
+          const blob = new Blob(chunks, { type: recorder.mimeType || "audio/webm" });
+          const text = await transcribeVoice(blob);
+          if (text) await submitVoice(text);
+          else toast("I couldn't hear that — try again", "err");
+        } catch (err) {
+          toast(err.message || "Voice failed — try again or type instead", "err");
+        }
+      };
+      recorder.onerror = (e) => {
+        toast(e && e.error && e.error.message ? e.error.message : "Recording failed", "err");
+        setRecording(false);
+      };
+      micRef.current.stream = stream;
+      micRef.current.recorder = recorder;
+      recorder.start();
+    } catch (err) {
+      const name = err && err.name;
+      toast(
+        name === "NotAllowedError" || name === "NotFoundError"
+          ? "Microphone unavailable"
+          : "Couldn't start microphone",
+        "err",
+      );
+      setRecording(false);
+      micHold.current = false;
+    }
+  }, [busy, recording, submitVoice]);
+
+  const endMic = useCallback(() => {
+    const { recorder, stream } = micRef.current;
+    micHold.current = false;
+    micRef.current.cancelled = true;
+    if (recorder && recorder.state !== "inactive") recorder.stop();
+    if (stream) stream.getTracks().forEach((t) => t.stop());
+    micRef.current = { recorder: null, chunks: [], stream: null, cancelled: false };
+    if (!recorder) setRecording(false);
+  }, []);
 
   if (loading) {
     return (
@@ -145,6 +324,18 @@ export default function OnboardingPage() {
               <span className="chat-dot" aria-hidden="true" />
               {cur?.section || "Novi is listening"}
             </div>
+          </div>
+          <div className="chat-head-actions">
+            <button
+              type="button"
+              className={`chat-head-btn${voiceOn ? " on" : ""}`}
+              onClick={() => setVoiceOn((v) => !v)}
+              title={voiceOn ? "Turn voice off" : "Turn voice on"}
+              aria-pressed={voiceOn}
+            >
+              {voiceOn ? <Volume2 size={15} /> : <VolumeX size={15} />}
+              Voice
+            </button>
           </div>
           <div className="ob-progress-wrap" aria-label={`${percent}% complete`}>
             <div className="ob-progress-track">
@@ -201,7 +392,35 @@ export default function OnboardingPage() {
           ) : null}
         </div>
 
+        <audio ref={audioRef} hidden />
+
         <div className="ob-composer">
+          {voiceOn && cur ? (
+            <div className="ob-voicebar">
+              <button
+                type="button"
+                className={`ob-mic${recording ? " rec" : ""}`}
+                onPointerDown={(e) => {
+                  e.preventDefault();
+                  beginMic();
+                }}
+                onPointerUp={() => endMic()}
+                onPointerCancel={() => endMic()}
+                onPointerLeave={() => {
+                  if (recording) endMic();
+                }}
+                onContextMenu={(e) => e.preventDefault()}
+                disabled={busy}
+                title={recording ? "Release to stop and transcribe" : "Hold to talk"}
+                aria-label="Hold to talk"
+              >
+                {recording ? <Loader2 size={18} className="spin" /> : <Mic size={18} />}
+              </button>
+              <span className="ob-hint">
+                {recording ? "Listening… release to transcribe" : "Hold to talk"}
+              </span>
+            </div>
+          ) : null}
           {isMulti ? (
             <MultiPicker
               cur={cur}

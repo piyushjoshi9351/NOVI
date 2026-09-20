@@ -57,6 +57,12 @@ ONBOARDING_STEPS = [
      "question": "Do you currently have a career in mind?",
      "options_source": "static:career_stage", "save_field": "has_career_in_mind"},
 
-    {"id": "primary_goal", "order": 13, "type": StepType.AI_ASSISTED, "input_type": InputType.TEXT,
+    {"id": "career_name", "order": 13, "type": StepType.AI_ASSISTED, "input_type": InputType.TEXT,
+     "question": "What career are you thinking about?"},
+
+    {"id": "career_reason", "order": 14, "type": StepType.AI_ASSISTED, "input_type": InputType.TEXT,
+     "question": "What makes you interested in it?"},
+
+    {"id": "primary_goal", "order": 15, "type": StepType.AI_ASSISTED, "input_type": InputType.TEXT,
      "question": "If Novi could help you with one thing, what would you want it to be?"},
 ]
