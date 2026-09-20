@@ -44,6 +44,14 @@ def init_db(reset: bool = False) -> None:
         created = seed(db)
         print(f"[init_db] seeded: careers={created['careers']}, universities={created['universities']}")
 
+    from app.db.seed_onboarding import seed_onboarding
+
+    with SessionLocal() as db:
+        onboarding = seed_onboarding(db)
+        print(f"[init_db] seeded: countries={onboarding['countries']}, "
+              f"curriculums={onboarding['curriculums']}, "
+              f"grades={onboarding['grades']}, subjects={onboarding['subjects']}")
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Initialize (or reset) the NOVI database")

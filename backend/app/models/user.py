@@ -25,6 +25,8 @@ class User(Base):
     avatar: Mapped[str | None] = mapped_column(Text, nullable=True)
     is_active: Mapped[bool] = mapped_column(default=True, server_default="1")
     letta_agent_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    onboarding_step: Mapped[str] = mapped_column(String(50), nullable=False, default="name", server_default="name")
+    onboarding_completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
