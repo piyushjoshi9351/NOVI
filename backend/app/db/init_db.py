@@ -16,6 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 from sqlalchemy import inspect, text
 
 from app.core.database import Base, SessionLocal, engine
+from app.db.run_migrations import run_migrations
 from app import models  # noqa: F401  (registers all tables on Base.metadata)
 
 
@@ -37,6 +38,8 @@ def init_db(reset: bool = False) -> None:
 
     M3Base.metadata.create_all(bind=engine)
     print("[init_db] module-3 tables ready")
+
+    run_migrations()
 
     from app.db.seeds import seed
 

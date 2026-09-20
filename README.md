@@ -486,6 +486,8 @@ Not MySQL — Letta's own PostgreSQL (`novi_letta_db`, user `novi_user`). Key co
   `universities` catalogs.
 - `backend/app/db/init_db.py` — `python -m app.db.init_db` creates all tables (legacy +
   m3) and seeds; `--reset` drops everything first.
+- New schema changes go in `backend/migrations/000X_*.sql` — these run automatically
+  on startup, but always confirm via `SELECT * FROM schema_migrations` after deploying.
 
 ---
 

@@ -20,7 +20,11 @@ async def lifespan(_app: FastAPI):
     # Idempotent: ensure every registered model (incl. onboarding_sessions) exists.
     import app.models  # noqa: F401  (registers all tables on Base.metadata)
 
+    from app.db.run_migrations import check_critical_columns, run_migrations
+
     Base.metadata.create_all(bind=engine)
+    run_migrations()
+    check_critical_columns()
     yield
 
 

@@ -16,6 +16,7 @@ from app.api import (
     universities,
 )
 from app.m3.api.routes import router as m3_router
+from app.routers.onboarding import router as onboarding_flow_router
 
 api_router = APIRouter(prefix="/api/v1")
 api_router.include_router(auth.router)
@@ -31,4 +32,5 @@ api_router.include_router(dashboard.router)
 api_router.include_router(parents.router)
 api_router.include_router(memory.router)
 api_router.include_router(onboarding.router)
+api_router.include_router(onboarding_flow_router)
 api_router.include_router(m3_router, prefix="/m3")
