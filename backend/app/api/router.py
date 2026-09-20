@@ -7,6 +7,7 @@ from app.api import (
     chat,
     checkins,
     dashboard,
+    google_auth,
     memory,
     onboarding,
     parents,
@@ -18,6 +19,7 @@ from app.m3.api.routes import router as m3_router
 
 api_router = APIRouter(prefix="/api/v1")
 api_router.include_router(auth.router)
+api_router.include_router(google_auth.router)
 api_router.include_router(chat.router)
 api_router.include_router(careers.router)
 api_router.include_router(universities.router)

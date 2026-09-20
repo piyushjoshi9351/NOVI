@@ -36,6 +36,14 @@ class Settings(BaseSettings):
     JWT_ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 7  # 7 days
 
+    # --- Google OAuth (server-side authorization-code flow) ---
+    GOOGLE_CLIENT_ID: str = ""
+    GOOGLE_CLIENT_SECRET: str = ""
+    # Must match one of the registered redirect URIs in Google Cloud Console.
+    GOOGLE_REDIRECT_URI: str = ""
+    # Origin the browser is redirected back to after Google sign-in completes.
+    FRONTEND_URL: str = "http://localhost:3000"
+
     # --- Gemini ---
     GEMINI_API_KEY: str = ""
     GEMINI_MODEL: str = "gemini-3.6-flash"

@@ -27,6 +27,7 @@ export function AuthProvider({ children }) {
     setUser(null);
     resetWarmAll();
     clearApiCache();
+    if (typeof window !== "undefined") window.location.href = "/signup";
   };
 
   const patchUser = (u) => {

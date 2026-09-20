@@ -45,6 +45,12 @@ app.add_middleware(
 
 app.include_router(api_router)
 
+# Google OAuth callback must live at the exact (unversioned) redirect URI registered
+# in Google Cloud Console — e.g. http://localhost:8000/api/auth/google/callback.
+from app.api import google_auth  # noqa: E402
+
+app.include_router(google_auth.router, prefix="/api", include_in_schema=False)
+
 if FRONTEND_DIR.exists():
     app.mount("/static", StaticFiles(directory=str(FRONTEND_DIR / "static")), name="static")
 
