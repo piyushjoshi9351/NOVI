@@ -90,7 +90,9 @@ export default function AuthShell({ mode }: { mode: "login" | "register" }) {
       if (res && res.access_token) {
         window.localStorage.setItem("novi.email", trimmedEmail);
         login(res.access_token, res.user);
-        router.push("/dashboard");
+        router.push(mode === "register"
+          ? (role === "parent" ? "/overview" : "/onboarding")
+          : "/dashboard");
       }
     } catch (ex) {
       setError((ex as Error)?.message || "Something went wrong.");

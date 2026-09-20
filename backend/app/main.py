@@ -1,4 +1,5 @@
 import logging
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -7,10 +8,21 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.api.router import api_router
+from app.core.database import Base, engine
 from app.core.config import PROJECT_ROOT, settings
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("novi")
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    # Idempotent: ensure every registered model (incl. onboarding_sessions) exists.
+    import app.models  # noqa: F401  (registers all tables on Base.metadata)
+
+    Base.metadata.create_all(bind=engine)
+    yield
+
 
 FRONTEND_DIR = Path(settings.FRONTEND_DIR)
 
@@ -20,6 +32,7 @@ app = FastAPI(
     description="NOVI — The Operating System for Student Success",
     docs_url="/docs",
     openapi_url="/api/v1/openapi.json",
+    lifespan=lifespan,
 )
 
 app.add_middleware(

@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import {
-  BookMarked, Briefcase, CalendarCheck, Dna, GraduationCap, LayoutDashboard, LogOut, Map, MessageCircle, Moon, Sparkles, Sun, UserRound,
+  BookMarked, Briefcase, CalendarCheck, Dna, GraduationCap, LayoutDashboard, LogOut, Map, MessageCircle, Moon, Rocket, Sparkles, Sun, UserRound,
 } from "lucide-react";
 import { AuthProvider, useAuth } from "./auth";
 import { applyTheme, bootAppearance, getTheme, setPrefKey, warmAllRoutes } from "./api";
@@ -12,7 +12,7 @@ import { Loader, toast, ToastHost } from "./ui";
 import AuthPage from "./views/AuthPage";
 
 const studentNav = [
-  ["dashboard", "Dashboard"], ["chat", "Chat"], ["dna", "My DNA"],
+  ["dashboard", "Dashboard"], ["onboarding", "Onboarding"], ["chat", "Chat"], ["dna", "My DNA"],
   ["careers", "Careers"], ["universities", "Universities"],
   ["roadmap", "Roadmap"], ["passport", "Passport"], ["checkin", "Check-in"],
   ["profile", "Profile"],
@@ -21,6 +21,7 @@ const parentNav = [["overview", "Overview"], ["advisor", "Parent Advisor"]];
 
 const NAV_ICONS = {
   dashboard: LayoutDashboard,
+  onboarding: Rocket,
   chat: MessageCircle,
   dna: Dna,
   careers: Briefcase,

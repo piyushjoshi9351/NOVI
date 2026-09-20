@@ -32,6 +32,9 @@ class User(Base):
 
     conversations = relationship("Conversation", back_populates="user", cascade="all, delete-orphan")
     career_dna = relationship("CareerDNA", back_populates="user", uselist=False, cascade="all, delete-orphan")
+    onboarding = relationship(
+        "OnboardingSession", back_populates="user", uselist=False, cascade="all, delete-orphan"
+    )
     career_matches = relationship("CareerMatch", back_populates="user", cascade="all, delete-orphan")
     university_matches = relationship("UniversityMatch", back_populates="user", cascade="all, delete-orphan")
     goals = relationship("Goal", back_populates="user", cascade="all, delete-orphan")

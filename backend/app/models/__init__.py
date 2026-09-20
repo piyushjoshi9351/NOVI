@@ -12,6 +12,7 @@ from app.models.enums import (
 from app.models.user import ParentStudentLink, User
 from app.models.chat import Conversation, Message
 from app.models.career_dna import CareerDNA
+from app.models.onboarding_session import OnboardingSession
 from app.models.career import Career, CareerMatch
 from app.models.university import University, UniversityMatch
 from app.models.roadmap import Goal, RoadmapItem, Task, WeeklyPriority
@@ -29,6 +30,7 @@ __all__ = [
     "GoalStatus",
     "Message",
     "MessageRole",
+    "OnboardingSession",
     "ParentStudentLink",
     "PassportCategory",
     "PassportItem",
