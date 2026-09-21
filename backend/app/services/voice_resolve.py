@@ -7,9 +7,19 @@ that is not one of step.options (for single/multi steps).
 """
 
 import json
+from dataclasses import dataclass
 
-from app.services.onboarding_flow import Step
 from app.services.providers import gemini
+
+
+@dataclass
+class Step:
+    """Minimal onboarding step surface voice resolution needs (engine-agnostic)."""
+
+    id: str
+    question: str
+    kind: str  # single | multi | free
+    options: list[str] | None = None
 
 # Short or catch-all options that would match far too much text as substrings.
 _SUBSTRING_IGNORE = {

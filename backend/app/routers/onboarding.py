@@ -1,4 +1,4 @@
-"""Public conversational-onboarding API (deterministic steps first).
+"""Conversational onboarding API — the only onboarding engine (15 steps).
 
 Reads the ONBOARDING_STEPS registry (app/onboarding/steps.py) and the onboarding
 tables (users.onboarding_step, onboarding_answers, student_profile, countries,
@@ -11,29 +11,42 @@ curriculums, grades, subjects) to serve the 15-step flow.
 - GET  /subjects         -> subjects for country_code + curriculum_id + grade_id
 - POST /answer           -> validate + save an answer, advance, return next step
 
+Compatibility adapters kept so the flow + voice frontend and clients that spoke
+the legacy flow protocol keep working:
+
+- GET  /flow             -> flow-state shape (started/done/percent/current/...)
+- POST /flow/start       -> reset-free "make sure a flow exists"
+- POST /flow/answer      -> legacy answer protocol ({step_id, answer|values})
+- POST /flow/skip        -> record a skip and advance
+- POST /flow/reset       -> wipe this student's onboarding + start again
+- POST /voice/speak      -> ElevenLabs TTS (StreamingResponse)
+- POST /voice/transcribe -> ElevenLabs STT
+- POST /voice/answer     -> resolve spoken answer to a valid value + submit
+
 AI-assisted steps ("university", "career_name", "career_reason", "primary_goal") ask
 the student's LettA agent for a short reply; the durable facts are then extracted
-deterministically and persisted via the internal/ onboarding endpoints (the same
-routes the registered LettA tools POST to). If LettA is unreachable the steps still
-complete with a fallback reply.
+deterministically and persisted in-process onto the student profile (the same fields
+the registered LettA tools POST to via the internal/ onboarding endpoints). If LettA
+is unreachable the steps still complete with a fallback reply.
 
-The legacy 8-step onboarding router (app/api/onboarding.py) is only mounted when
-ONBOARDING_ENGINE=legacy, at /api/v1/onboarding/legacy - untouched.
+Completing the last step kicks off a background finalize: Career DNA refresh,
+career matching, passport refresh and an auto-generated roadmap, all grounded in
+the 15-step context (see _finalize_after_onboarding).
 """
 
 from datetime import datetime, timezone
+import asyncio
 import logging
 import os
 import re
 from typing import Any
 
-import httpx
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.core.config import settings
 from app.core.database import get_db
 from app.core.deps import get_current_student
 from app.letta_client import create_student_agent, send_onboarding_message
@@ -41,6 +54,8 @@ from app.models.catalog import Country, Curriculum, Grade, Subject
 from app.models.onboarding_data import OnboardingAnswer, StudentProfile
 from app.models.user import User
 from app.onboarding.steps import ONBOARDING_STEPS, InputType, StepType
+from app.services import voice, voice_resolve
+from app.services.student_context import career_in_mind_phrase, load_student_context
 
 logger = logging.getLogger("novi.onboarding")
 
@@ -113,13 +128,6 @@ FALLBACK_REPLIES = {
     "primary_goal": "Got it! I'll keep that front and center for you.",
 }
 
-INTERNAL_ROUTES = {
-    "university": "university",
-    "career_name": "career",
-    "career_reason": "career",
-    "primary_goal": "goal",
-}
-
 
 def _clean_university_text(text: str) -> str:
     """Drop common intro phrasing so "I want to study at Stanford" -> "Stanford"."""
@@ -171,18 +179,25 @@ def _extract_facts(step: dict, value: Any) -> dict | None:
     return None
 
 
-def _internal_onboarding_write(student_id: int, step_id: str, payload: dict) -> None:
-    """Persist extracted facts via the internal/onboarding endpoints (exactly
-    what the registered LettA tools POST to)."""
-    route = INTERNAL_ROUTES[step_id]
-    url = f"{settings.INTERNAL_CALLBACK_BASE_URL.rstrip('/')}/internal/onboarding/{student_id}/{route}"
-    response = httpx.post(
-        url,
-        json=payload,
-        headers={"X-Internal-Secret": settings.INTERNAL_SHARED_SECRET},
-        timeout=10.0,
-    )
-    response.raise_for_status()
+def _persist_extracted(profile: StudentProfile, step_id: str, payload: dict) -> None:
+    """Persist extracted facts onto the StudentProfile in-process.
+
+    Mirrors exactly what the internal/onboarding endpoints write (the same fields
+    the registered LettA tools POST to), but without a self-HTTP round-trip so it
+    can never deadlock on the event loop during the flow request.
+    """
+    if profile is None:
+        return
+    if step_id == "university":
+        profile.university_name = payload.get("university_name")
+        profile.university_location = payload.get("location")
+        profile.university_extraction_conf = payload.get("confidence")
+    elif step_id == "career_name":
+        profile.career_name = payload.get("career_name")
+    elif step_id == "career_reason":
+        profile.career_interest_reason = payload.get("interest_reason_summary")
+    elif step_id == "primary_goal":
+        profile.primary_goal = payload.get("goal_summary")
 
 
 class AnswerIn(BaseModel):
@@ -196,7 +211,12 @@ def _step_by_id(step_id: str) -> dict | None:
 
 def _current_step(user: User) -> dict | None:
     step_id = user.onboarding_step or ONBOARDING_STEPS[0]["id"]
-    return _step_by_id(step_id)
+    step = _step_by_id(step_id)
+    if step is None:
+        # Stale pointer (e.g. a pre-15-step onboarding_step id) -> restart cleanly.
+        user.onboarding_step = ONBOARDING_STEPS[0]["id"]
+        return ONBOARDING_STEPS[0]
+    return step
 
 
 def _profile(db: Session, user: User) -> StudentProfile | None:
@@ -401,7 +421,7 @@ def list_subjects(
 
 
 @router.post("/answer")
-def submit_answer(
+async def submit_answer(
     data: AnswerIn,
     user: User = Depends(get_current_student),
     db: Session = Depends(get_db),
@@ -457,7 +477,7 @@ def submit_answer(
             if step["id"] == "career_reason" and profile:
                 extracted["career_name"] = profile.career_name or ""
             try:
-                _internal_onboarding_write(user.id, step["id"], extracted)
+                _persist_extracted(profile, step["id"], extracted)
                 logger.info("persisted onboarding step '%s' for student %s", step["id"], user.id)
             except Exception as exc:
                 logger.warning("failed to persist step '%s' for student %s: %s", step["id"], user.id, exc)
@@ -489,6 +509,7 @@ def submit_answer(
         user.onboarding_step = DONE_STEP
         user.onboarding_completed_at = datetime.now(timezone.utc)
         db.commit()
+        _schedule_finalize(user.id)
         return {"completed": True}
 
     user.onboarding_step = nxt["id"]
@@ -498,3 +519,424 @@ def submit_answer(
     if letta_reply:
         payload["letta_reply"] = letta_reply
     return payload
+
+
+# ---------------------------------------------------------------------------
+# Flow-protocol compatibility adapters (the legacy flow frontend shape)
+# ---------------------------------------------------------------------------
+
+class FlowAnswerIn(BaseModel):
+    step_id: str
+    answer: str | None = None
+    values: list[str] | None = None
+
+
+class SkipIn(BaseModel):
+    step_id: str
+
+
+def _answers(db: Session, user: User) -> list[OnboardingAnswer]:
+    return list(
+        db.scalars(
+            select(OnboardingAnswer)
+            .where(OnboardingAnswer.student_id == user.id)
+            .order_by(OnboardingAnswer.id)
+        )
+    )
+
+
+def _is_skip(raw) -> bool:
+    return isinstance(raw, dict) and bool(raw.get("skipped"))
+
+
+def _value_text(raw) -> str:
+    if raw is None:
+        return ""
+    if _is_skip(raw):
+        return "⏭ Skipped"
+    if isinstance(raw, list):
+        return ", ".join(str(v) for v in raw)
+    if isinstance(raw, dict):
+        return ", ".join(f"{k}: {v}" for k, v in raw.items() if k != "skipped")
+    return str(raw).strip()
+
+
+def _legacy_kind(input_type: InputType) -> str:
+    if input_type == InputType.MULTI_SELECT:
+        return "multi"
+    if input_type == InputType.TEXT:
+        return "free"
+    return "single"
+
+
+def _legacy_step(db: Session, user: User, step: dict) -> dict | None:
+    options = _options(db, step, _profile(db, user))
+    return {
+        "id": step["id"],
+        "question": step["question"],
+        "kind": _legacy_kind(step["input_type"]),
+        "options": [o["label"] for o in options],
+        "optional": False,
+        "max_select": None,
+        "hint": None,
+        "section": "onboarding",
+    }
+
+
+def _flow_transcript(answers: list[OnboardingAnswer]) -> list[dict]:
+    by_id = {s["id"]: s for s in ONBOARDING_STEPS}
+    out: list[dict] = []
+    for a in answers:
+        step = by_id.get(a.step_id)
+        if not step:
+            continue
+        out.append({"role": "assistant", "content": step["question"]})
+        out.append({"role": "user", "content": _value_text(a.raw_value)})
+    return out
+
+
+def _completion_summary(db: Session, user: User, answers: list[OnboardingAnswer]) -> dict:
+    ctx = load_student_context(db, user)
+    career = career_in_mind_phrase(ctx)
+    return {
+        "archetype": "profile ready",
+        "status": "complete",
+        "message": "Onboarding complete! Novi has your profile ready — check your DNA, careers and roadmap.",
+        "traits": (ctx.get("strengths") or [])[:3],
+        "career_zones": [career] if career else (ctx.get("interests") or [])[:2],
+        "interests": (ctx.get("interests") or [])[:4],
+        "subjects": (ctx.get("subjects_enjoyed") or [])[:4],
+        "goal": (ctx.get("goal_vision") or ctx.get("help_wish") or career or "Build a stronger profile"),
+    }
+
+
+def _flow_state(db: Session, user: User) -> dict:
+    done = user.onboarding_step == DONE_STEP
+    answers = _answers(db, user)
+    answered = sum(1 for a in answers if not _is_skip(a.raw_value))
+    total = len(ONBOARDING_STEPS)
+    current = None if done else _legacy_step(db, user, _current_step(user))
+    return {
+        "started": True,
+        "done": done,
+        "status": "done" if done else "active",
+        "conversation_id": None,
+        "percent": min(100, round(answered / total * 100) if total else 0),
+        "answered": answered,
+        "total": total,
+        "current": current,
+        "transcript": _flow_transcript(answers),
+        "summary": _completion_summary(db, user, answers) if done else None,
+        "error": None,
+    }
+
+
+def _submit_flow(db: Session, user: User, step_id: str, value: Any) -> dict | None:
+    """Non-HTTP version of /answer's core (returns None when advance completes).
+
+    The flow frontend submits the *displayed* option label; catalog-driven steps
+    (country/curriculum/grade/subjects) use opaque codes as option values, so any
+    submitted value that matches a label is mapped back to its value first. Static
+    steps are identity (label == value), and free-text answers pass through.
+    """
+    step = _step_by_id(step_id)
+    current = _current_step(user)
+    if step is None or current is None or step["id"] != current["id"]:
+        raise HTTPException(status_code=404, detail="Step not found or not the current step")
+
+    profile = _profile(db, user)
+    options = _options(db, step, profile)
+    by_label = {o["label"]: o["value"] for o in options}
+    if isinstance(value, list):
+        value = [by_label.get(v, v) for v in value]
+    elif isinstance(value, str):
+        value = by_label.get(value, value)
+    _validate(step, value, options)
+
+    db.add(OnboardingAnswer(student_id=user.id, step_id=step["id"], raw_value=value))
+
+    if profile is None:
+        profile = StudentProfile(student_id=user.id)
+        db.add(profile)
+
+    if step["type"] == StepType.DETERMINISTIC:
+        if step["id"] == "career":
+            profile.has_career_in_mind = value != "No idea"
+        else:
+            setattr(profile, step["save_field"], value)
+    else:  # AI_ASSISTED
+        if step["id"] == "university":
+            profile.university_raw_text = value
+        if user.letta_agent_id:
+            send_onboarding_message(user.letta_agent_id, step["id"], value or "")
+        extracted = _extract_facts(step, value)
+        if extracted:
+            if step["id"] == "career_reason" and profile:
+                extracted["career_name"] = profile.career_name or ""
+            try:
+                _persist_extracted(profile, step["id"], extracted)
+                logger.info("persisted onboarding step '%s' for student %s", step["id"], user.id)
+            except Exception as exc:
+                logger.warning("failed to persist step '%s' for student %s: %s", step["id"], user.id, exc)
+
+    if step["id"] == "career":
+        nxt = _step_by_id("primary_goal") if value == "No idea" else _step_by_id("career_name")
+    else:
+        idx = ONBOARDING_STEPS.index(step)
+        nxt = ONBOARDING_STEPS[idx + 1] if idx + 1 < len(ONBOARDING_STEPS) else None
+
+    if nxt is None:
+        user.onboarding_step = DONE_STEP
+        user.onboarding_completed_at = datetime.now(timezone.utc)
+        db.commit()
+        return None
+
+    user.onboarding_step = nxt["id"]
+    db.commit()
+    return _step_by_id(nxt["id"])
+
+
+@router.get("/flow")
+def flow_state(
+    user: User = Depends(get_current_student),
+    db: Session = Depends(get_db),
+):
+    return _flow_state(db, user)
+
+
+@router.post("/flow/start")
+def flow_start(
+    user: User = Depends(get_current_student),
+    db: Session = Depends(get_db),
+):
+    if not user.onboarding_step:
+        user.onboarding_step = ONBOARDING_STEPS[0]["id"]
+        db.commit()
+    return _flow_state(db, user)
+
+
+@router.post("/flow/answer")
+async def flow_answer(
+    data: FlowAnswerIn,
+    user: User = Depends(get_current_student),
+    db: Session = Depends(get_db),
+):
+    if data.values is not None:
+        value: Any = data.values
+    else:
+        value = data.answer
+    _submit_flow(db, user, data.step_id, value)
+    if user.onboarding_step == DONE_STEP:
+        _schedule_finalize(user.id)
+    return _flow_state(db, user)
+
+
+@router.post("/flow/skip")
+async def flow_skip(
+    data: SkipIn,
+    user: User = Depends(get_current_student),
+    db: Session = Depends(get_db),
+):
+    step = _step_by_id(data.step_id)
+    current = _current_step(user)
+    if step is None or current is None or step["id"] != current["id"]:
+        raise HTTPException(status_code=404, detail="Step not found or not the current step")
+    idx = ONBOARDING_STEPS.index(step)
+    nxt = ONBOARDING_STEPS[idx + 1] if idx + 1 < len(ONBOARDING_STEPS) else None
+    db.add(OnboardingAnswer(student_id=user.id, step_id=step["id"], raw_value={"skipped": True}))
+    if nxt is None:
+        user.onboarding_step = DONE_STEP
+        user.onboarding_completed_at = datetime.now(timezone.utc)
+        db.commit()
+        _schedule_finalize(user.id)
+        return _flow_state(db, user)
+    user.onboarding_step = nxt["id"]
+    db.commit()
+    return _flow_state(db, user)
+
+
+@router.post("/flow/reset")
+def flow_reset(
+    user: User = Depends(get_current_student),
+    db: Session = Depends(get_db),
+):
+    for row in _answers(db, user):
+        db.delete(row)
+    user.onboarding_step = ONBOARDING_STEPS[0]["id"]
+    user.onboarding_completed_at = None
+    db.commit()
+    return _flow_state(db, user)
+
+
+# ---------------------------------------------------------------------------
+# Voice (TTS / STT / spoken answers) — engine-agnostic
+# ---------------------------------------------------------------------------
+
+class SpeakIn(BaseModel):
+    text: str
+
+
+class VoiceAnswerIn(BaseModel):
+    step_id: str
+    transcript: str
+
+
+def _label_to_value(options: list[dict], label: str) -> str:
+    if not label:
+        return ""
+    for o in options:
+        if o["label"] == label:
+            return o["value"]
+    return label
+
+
+@router.post("/voice/speak")
+async def voice_speak(
+    data: SpeakIn,
+    user: User = Depends(get_current_student),
+):
+    stream = voice.speak(data.text)
+
+    try:
+        first = await stream.__anext__()
+    except StopAsyncIteration:
+        raise HTTPException(status_code=502, detail="No audio produced")
+    except voice.VoiceError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+
+    async def _stream():
+        yield first
+        async for chunk in stream:
+            yield chunk
+
+    return StreamingResponse(_stream(), media_type="audio/mpeg")
+
+
+@router.post("/voice/transcribe")
+async def voice_transcribe(
+    file: UploadFile = File(...),
+    user: User = Depends(get_current_student),
+):
+    try:
+        audio = await file.read()
+        text = await voice.transcribe(audio, file.filename or "audio.webm")
+    except voice.VoiceError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+    return {"text": text}
+
+
+@router.post("/voice/answer")
+async def voice_answer(
+    data: VoiceAnswerIn,
+    user: User = Depends(get_current_student),
+    db: Session = Depends(get_db),
+):
+    step = _step_by_id(data.step_id)
+    if step is None:
+        raise HTTPException(status_code=404, detail="Unknown step.")
+
+    profile = _profile(db, user)
+    options = _options(db, step, profile)
+    labels = [o["label"] for o in options]
+    kind = _legacy_kind(step["input_type"])
+    rstep = voice_resolve.Step(id=step["id"], question=step["question"], kind=kind, options=labels)
+    resolved = await voice_resolve.resolve_answer(rstep, data.transcript)
+    if resolved is None or (isinstance(resolved, list) and not resolved):
+        return {
+            "resolved": False,
+            "error": "Couldn't map your spoken answer to a valid option — please try again.",
+        }
+
+    if isinstance(resolved, list):
+        value = [_label_to_value(options, label) for label in resolved]
+    else:
+        value = _label_to_value(options, resolved)
+    _submit_flow(db, user, step["id"], value)
+    if user.onboarding_step == DONE_STEP:
+        _schedule_finalize(user.id)
+    return {"resolved": True, "resolved_value": value, **_flow_state(db, user)}
+
+
+# ---------------------------------------------------------------------------
+# Background completion: DNA + careers + roadmap + passport from 15-step context
+# ---------------------------------------------------------------------------
+
+def _finalize_history(db: Session, user: User) -> list[dict]:
+    """Deterministic Q&A transcript reconstructed from the stored answers."""
+    by_id = {s["id"]: s for s in ONBOARDING_STEPS}
+    out: list[dict] = []
+    for a in _answers(db, user):
+        step = by_id.get(a.step_id)
+        if not step or _is_skip(a.raw_value):
+            continue
+        out.append({"role": "assistant", "content": step["question"]})
+        out.append({"role": "user", "content": _value_text(a.raw_value)})
+    return out
+
+
+def _schedule_finalize(user_id: int) -> None:
+    """Fire-and-forget the post-onboarding finalize so the answer request returns
+    instantly even when the LLM-backed steps are slow."""
+    try:
+        asyncio.create_task(_finalize_after_onboarding(user_id))
+    except RuntimeError:  # pragma: no cover - no running loop (tests / sync callers)
+        print("[onboarding] no event loop; skipping background finalize")
+
+
+async def _finalize_after_onboarding(user_id: int) -> None:
+    from app.core.database import SessionLocal
+    from app.models.roadmap import Goal
+    from app.schemas.career import CareerMatchRequest
+    from app.schemas.roadmap import RoadmapGenerateRequest
+    from app.services import passport as passport_service
+    from app.services import roadmap as roadmap_service
+    from app.services.career_dna import refresh_dna_from_history
+    from app.services.careers import match_careers
+
+    db = SessionLocal()
+    try:
+        user = db.get(User, user_id)
+        if user is None:
+            return
+
+        history = _finalize_history(db, user)
+        if not history:
+            logger.info("onboarding finalize: no answers recorded for student %s", user_id)
+            return
+
+        try:
+            await refresh_dna_from_history(user, history, db)
+            logger.info("onboarding finalize: Career DNA refreshed for %s", user_id)
+        except Exception as exc:
+            print(f"[onboarding] dna finalize failed: {exc}")
+
+        try:
+            await match_careers(db, user, CareerMatchRequest(limit=8))
+            logger.info("onboarding finalize: careers matched for %s", user_id)
+        except Exception as exc:
+            print(f"[onboarding] career match failed: {exc}")
+
+        try:
+            await passport_service.refresh_from_chat(db, user)
+            logger.info("onboarding finalize: passport refreshed for %s", user_id)
+        except Exception as exc:
+            print(f"[onboarding] passport refresh failed: {exc}")
+
+        try:
+            goals = list(db.scalars(select(Goal).where(Goal.user_id == user.id, Goal.status == "active")))
+            junk = {"test answer", "test", "none", "...", "na", "n/a", "i don't know", ""}
+            real = [g for g in goals if str(g.title or "").strip().lower() not in junk]
+            if not real:
+                ctx = load_student_context(db, user)
+                title = (
+                    (ctx.get("goal_vision") or ctx.get("help_wish") or career_in_mind_phrase(ctx))
+                    or "Build a stronger profile"
+                )
+                await roadmap_service.generate_roadmap(
+                    db, user, RoadmapGenerateRequest(title=str(title)[:120])
+                )
+                logger.info("onboarding finalize: roadmap generated for %s", user_id)
+        except Exception as exc:
+            print(f"[onboarding] roadmap generate failed: {exc}")
+    finally:
+        db.close()

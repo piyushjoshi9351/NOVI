@@ -70,14 +70,6 @@ class Settings(BaseSettings):
     INTERNAL_SHARED_SECRET: str = ""
     INTERNAL_CALLBACK_BASE_URL: str = "http://localhost:8000"
 
-    # --- Onboarding engine ---
-    # "legacy" (default) mounts the flow + voice onboarding engine at /onboarding
-    # (app/api/onboarding.py -> app/services/onboarding_flow.py, includes the
-    # /voice/speak|transcribe|answer routes). "new" mounts the parallel
-    # conversational engine (app/routers/onboarding.py) at /onboarding instead.
-    # Set ONBOARDING_ENGINE=new to opt back into that one (see README).
-    ONBOARDING_ENGINE: str = "legacy"
-
     @property
     def database_url(self) -> str:
         encoded_password = quote_plus(self.DB_PASSWORD)

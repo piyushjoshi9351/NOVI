@@ -69,6 +69,9 @@ export default function AuthShell({ mode }: { mode: "login" | "register" }) {
     const saved = window.localStorage.getItem("novi.email") || "";
     if (saved) setEmail(saved);
 
+    const googleError = params.get("google_error");
+    if (googleError) setError("Google sign-in failed. Please try again.");
+
     const googleToken = params.get("google_token");
     const isNewGoogleUser = params.get("google_new") === "1";
     if (googleToken) {

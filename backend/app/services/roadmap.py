@@ -19,7 +19,9 @@ from app.schemas.roadmap import (
     TaskUpdate,
 )
 from app.services.career_dna import get_dna
+from app.services import m3_bridge
 from app.services.providers import dna_dict, gemini, memory
+from app.services.student_context import load_student_context
 
 GRADE_STAGE = {
     9: RoadmapStage.DISCOVER,
@@ -58,6 +60,7 @@ def create_goal(db: Session, user: User, data: GoalCreate) -> Goal:
     db.add(goal)
     db.commit()
     db.refresh(goal)
+    m3_bridge.sync_goal_to_m3(db, user, goal)
     memory.archive(
         user,
         f"User set a goal: {goal.title} ({goal.category.value}).",
@@ -111,8 +114,23 @@ def update_goal(db: Session, user: User, goal_id: int, data: GoalUpdate) -> Goal
         goal.title = data.title
     if data.description is not None:
         goal.description = data.description
-    if data.status is not None and data.status in GoalStatus._value2member_map_:
-        goal.status = GoalStatus(data.status)
+
+    _STATUS_ALIASES = {"done": "completed", "cancelled": "paused"}
+    raw_status = data.status or goal.status.value
+    mapped_status = _STATUS_ALIASES.get(raw_status, raw_status)
+    if mapped_status in GoalStatus._value2member_map_:
+        goal.status = GoalStatus(mapped_status)
+        if goal.status == GoalStatus.COMPLETED:
+            # Mark the m3 mirror + any active m3 roadmap completed too.
+            m3_bridge.sync_goal_to_m3(db, user, goal)
+            m3_bridge.set_goal_roadmap_status(db, user, goal, "completed")
+        elif goal.status == GoalStatus.PAUSED:
+            # Pausing abandons the scheduled plan and drops its legacy items.
+            for old in db.scalars(select(RoadmapItem).where(RoadmapItem.goal_id == goal.id)):
+                db.delete(old)
+            db.flush()
+            m3_bridge.set_goal_roadmap_status(db, user, goal, "abandoned")
+
     db.commit()
     db.refresh(goal)
     return goal
@@ -141,6 +159,8 @@ async def generate_roadmap(
         raise ValueError("A goal is required")
 
     dna = get_dna(user, db)
+    student = {"name": user.display_name, "grade": user.grade, "school": user.school}
+    student.update(load_student_context(db, user))
 
     chat_context = ""
     if request.text:
@@ -157,7 +177,7 @@ async def generate_roadmap(
             result = await gemini.complete_json(
                 prompts.roadmap_text_prompt(
                     {"title": goal.title, "description": goal.description, "category": goal.category.value},
-                    {"name": user.display_name, "grade": user.grade},
+                    student,
                     dna_dict(dna),
                     request.text,
                     chat_context,
@@ -178,7 +198,7 @@ async def generate_roadmap(
                 result = await gemini.complete_json(
                     prompts.roadmap_prompt(
                         {"title": goal.title, "description": goal.description, "category": goal.category.value},
-                        {"name": user.display_name, "grade": user.grade},
+                        student,
                         dna_dict(dna),
                     ),
                     system=prompts.ROADMAP_SYSTEM,
@@ -293,6 +313,8 @@ def week_start(d: date | None = None) -> date:
 async def generate_priorities(db: Session, user: User, request: PriorityGenerateRequest) -> list[WeeklyPriority]:
     start = week_start()
     dna = get_dna(user, db)
+    student = {"name": user.display_name, "grade": user.grade, "school": user.school}
+    student.update(load_student_context(db, user))
     goals = list_goals(db, user)
     active_goals = [{"title": g.title, "category": g.category.value} for g in goals]
     incomplete = [
@@ -306,7 +328,7 @@ async def generate_priorities(db: Session, user: User, request: PriorityGenerate
     try:
         result = await gemini.complete_json(
             prompts.weekly_priorities_prompt(
-                {"name": user.display_name, "grade": user.grade}, dna_dict(dna), active_goals, incomplete
+                student, dna_dict(dna), active_goals, incomplete
             ),
             system=prompts.WEEKLY_PRIORITIES_SYSTEM,
         )

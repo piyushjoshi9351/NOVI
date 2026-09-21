@@ -1,3 +1,4 @@
+import logging
 import secrets
 from urllib.parse import unquote
 
@@ -9,6 +10,8 @@ from app.core import security
 from app.core.config import settings
 from app.core.database import get_db
 from app.services import auth as auth_service
+
+logger = logging.getLogger("novi.google_auth")
 
 router = APIRouter(tags=["auth"])
 
@@ -40,7 +43,7 @@ async def google_oauth_callback(
 ):
     """Exchange the Google code, log the user in, and bounce them back to the frontend."""
     if not auth_service.google_is_configured() or not code or not state:
-        return _google_fail(request)
+        return _google_fail(request, detail="google_oauth_requires_code")
 
     expected = request.cookies.get("google_oauth_state")
     if not expected:
@@ -51,16 +54,20 @@ async def google_oauth_callback(
     if not _safe_next(next_path):
         next_path = "/login"
     if csrf != expected:
+        logger.warning("google OAuth state mismatch (CSRF guard) for path %s", next_path)
         return _google_fail(request, detail="google_oauth_verification_failed")
 
     try:
         user, is_new = await auth_service.google_login(code, db)
-    except HTTPException:
+    except HTTPException as exc:
+        logger.warning("google login rejected: %s", exc.detail)
         return _google_fail(request, detail="google_oauth_rejected")
     except Exception:
+        logger.exception("google login failed unexpectedly", exc_info=True)
         return _google_fail(request, detail="google_oauth_failed")
 
-    token = security.create_access_token(str(user.id), str(user.role.value))
+    role = getattr(user.role, "value", user.role)
+    token = security.create_access_token(str(user.id), str(role))
     dest = f"{settings.FRONTEND_URL.rstrip('/')}{next_path}?google_token={token}&google_new={'1' if is_new else '0'}"
     response = RedirectResponse(dest, status_code=302)
     response.delete_cookie("google_oauth_state")

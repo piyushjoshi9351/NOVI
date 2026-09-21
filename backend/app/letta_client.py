@@ -14,13 +14,24 @@ import logging
 import os
 from typing import Any
 
-from letta_client import Letta, MessageCreate
+try:
+    from letta_client import Letta, MessageCreate
+
+    LETTA_SDK_AVAILABLE = True
+except ImportError:
+    # letta-client is an optional integration (the LettA server itself is
+    # optional too). Keep the app importable even when the SDK isn't installed
+    # — onboarding just degrades to the deterministic path, exactly as it does
+    # when the LettA server is unreachable.
+    LETTA_SDK_AVAILABLE = False
+    Letta = None
+    MessageCreate = None
 
 from app.core.config import settings
 
 logger = logging.getLogger("novi.letta")
 
-letta = Letta(base_url=settings.LETTA_BASE_URL)
+letta = Letta(base_url=settings.LETTA_BASE_URL) if LETTA_SDK_AVAILABLE else None
 
 # Model handle for the onboarding agents. Google Gemini keeps everything on the
 # GEMINI_API_KEY the repo already maintains (no Anthropic key required).
@@ -59,9 +70,15 @@ def create_student_agent(student_id: str) -> str:
     as agent environment variables so the registered tools can reach the
     backend's internal endpoints.
 
-    Raises if LettA is unreachable / rejects the request; callers decide how to
-    react (onboarding degrades gracefully to the deterministic path).
+    Raises if the letta-client SDK is missing or LettA is unreachable / rejects
+    the request; callers decide how to react (onboarding degrades gracefully to
+    the deterministic path).
     """
+    if not LETTA_SDK_AVAILABLE or letta is None:
+        raise RuntimeError(
+            "letta-client SDK is not installed — run `pip install -r backend/requirements.txt` "
+            "in the project venv to enable LettA onboarding agents"
+        )
     agent = letta.agents.create(
         name=f"novi-student-{student_id}",
         model=LETTA_MODEL,
@@ -84,10 +101,13 @@ def create_student_agent(student_id: str) -> str:
 def send_onboarding_message(agent_id: str, step_id: str, value: Any) -> str | None:
     """Forward one raw onboarding answer to the student's agent.
 
-    Returns the agent's text reply (the transition line) or ``None`` when LettA
-    is unreachable or produced no plain-text reply. Never raises — onboarding
-    must not hard-depend on a healthy LettA server.
+    Returns the agent's text reply (the transition line) or ``None`` when the
+    letta-client SDK is missing, LettA is unreachable or produced no plain-text
+    reply. Never raises — onboarding must not hard-depend on a healthy LettA
+    server.
     """
+    if not LETTA_SDK_AVAILABLE or letta is None:
+        return None
     try:
         logger.info("sending step '%s' to LettA agent %s", step_id, agent_id)
         response = letta.agents.messages.create(

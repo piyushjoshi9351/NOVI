@@ -2,9 +2,9 @@
 import Gate from "../../../src/Gate";
 import OnboardingPage from "../../../src/views/OnboardingPage";
 
-// The live onboarding engine is the flow + voice one (ONBOARDING_ENGINE=legacy),
-// served at /onboarding/flow/* with /onboarding/voice/*. The conversational
-// engine (OnboardingChat) mounts here only when ONBOARDING_ENGINE=new.
+// The live onboarding engine is the single 15-step flow + voice engine
+// (app/routers/onboarding.py), served at /onboarding/flow/* with /onboarding/voice/*.
+// The legacy engine was removed; OnboardingPage is the only onboarding UI.
 export default function Page() {
   return <Gate page="onboarding"><OnboardingPage /></Gate>;
 }

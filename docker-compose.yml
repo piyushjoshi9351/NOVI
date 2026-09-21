@@ -76,7 +76,6 @@
       - LETTA_BASE_URL=http://letta:8283
       - INTERNAL_CALLBACK_BASE_URL=http://backend:8000
       - INTERNAL_SHARED_SECRET=${INTERNAL_SHARED_SECRET}
-      - ONBOARDING_ENGINE=${ONBOARDING_ENGINE:-legacy}
     networks:
       - novi-net
     depends_on:
