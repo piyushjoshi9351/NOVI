@@ -145,16 +145,22 @@ async def refresh_dna_from_history(
         # from what's already on record so the UI stays honest & populated.
         cleaned = {field: _clean_list(current.get(field)) for field in PREFERENCE_FIELDS}
         _anchor_context(ctx, cleaned)
+        cleaned["strengths"] = _clean_list(dna.strengths) + _clean_list(ctx.get("strengths"))
         if revoked:
             dna.excluded = _merge_excluded(dna.excluded, revoked)
             for field in PREFERENCE_FIELDS:
                 cleaned[field] = prune(cleaned[field], revoked)
-            dna.interests = cleaned["interests"]
-            dna.subjects = cleaned["subjects"]
-            dna.skills = cleaned["skills"]
-            dna.career_zones = cleaned["career_zones"]
-            dna.goals = cleaned["goals"]
+            cleaned["strengths"] = prune(cleaned["strengths"], revoked)
+        dna.interests = cleaned["interests"]
+        dna.subjects = cleaned["subjects"]
+        dna.skills = cleaned["skills"]
+        dna.career_zones = cleaned["career_zones"]
+        dna.goals = cleaned["goals"]
+        dna.motivations = cleaned["motivations"]
+        dna.values = cleaned["values"]
+        dna.strengths = cleaned["strengths"]
         dna.sources = build_dna_sources(cleaned, chat_history, conversation_id)
+        _populated_filled(cleaned, dna)
         db.commit()
         _rescore_on_dna_change(user, db)
         return dna
@@ -403,12 +409,60 @@ def _archive_shift(user: User, was: dict, now: CareerDNA) -> None:
         print(f"[dna] shift memory archive failed: {exc}")
 
 
+def seed_dna_from_context(user: User, db: Session, chat_history: list[dict] | None = None) -> CareerDNA:
+    """Deterministically build the Career DNA from what onboarding captured
+    (student context), with no LLM round-trip.
+
+    Called immediately after onboarding so the DNA is populated the moment the
+    flow finishes; the LLM-based `refresh_dna_from_history` then refines it in
+    the background without ever leaving the DNA empty.
+    """
+    dna = get_or_create_dna(user, db)
+    cleaned = {field: _clean_list(dna_dict(dna).get(field)) for field in PREFERENCE_FIELDS}
+    ctx = load_student_context(db, user)
+    _anchor_context(ctx, cleaned)
+    for field in PREFERENCE_FIELDS:
+        setattr(dna, field, cleaned[field])
+    dna.strengths = _uniq(_clean_list(dna.strengths) + _clean_list(ctx.get("strengths")))
+    dna.traits = _uniq(_clean_list(dna.traits) + _clean_list(ctx.get("interests")))
+    cleaned["strengths"] = dna.strengths
+    _populated_filled(cleaned, dna)
+    dna.sources = build_dna_sources(cleaned, chat_history or [], None)
+    db.commit()
+    db.refresh(dna)
+    _rescore_on_dna_change(user, db)
+    return dna
+
+
 def _clean_list(value) -> list:
     if value is None:
         return []
     if isinstance(value, list):
         return [str(v).strip() for v in value if str(v).strip()]
     return [str(value).strip()] if str(value).strip() else []
+
+
+def _uniq(values: list) -> list:
+    """Ordered de-dup of a list of non-empty strings."""
+    seen: set[str] = set()
+    out: list[str] = []
+    for value in values or []:
+        key = str(value).strip()
+        if key and key.casefold() not in seen:
+            seen.add(key.casefold())
+            out.append(key)
+    return out
+
+
+def _populated_filled(cleaned: dict, dna: CareerDNA) -> None:
+    """Mark a deterministically-built DNA as filled when it actually has content."""
+    if not dna.dna_filled:
+        has_content = any(
+            _clean_list(cleaned.get(f))
+            for f in ("interests", "strengths", "subjects", "skills", "career_zones", "motivations", "goals")
+        )
+        if has_content:
+            dna.dna_filled = True
 
 
 def _anchor_context(ctx: dict, cleaned: dict) -> dict:

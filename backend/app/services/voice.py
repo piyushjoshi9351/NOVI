@@ -1,8 +1,12 @@
-"""ElevenLabs voice helpers for conversational onboarding.
+"""Voice helpers for conversational onboarding.
 
-Backs three voice routes: TTS streaming (/voice/speak), STT (/voice/transcribe)
-and the voice-aware answer path (via voice_resolve). All calls go straight to
-the ElevenLabs REST API through httpx — no SDK dependency.
+Backs two voice routes: TTS streaming (/voice/speak) and STT
+(/voice/transcribe).
+
+TTS first tries ElevenLabs (configured voice, streamed MP3) and falls back
+to Google Translate TTS (gTTS) when no API key is configured or ElevenLabs
+errors — so TTS always returns audio. All calls go straight out through
+httpx — no ElevenLabs SDK dependency.
 """
 
 from collections.abc import AsyncIterator
@@ -22,12 +26,27 @@ class VoiceError(Exception):
 
 
 async def speak(text: str) -> AsyncIterator[bytes]:
-    """Stream TTS audio for `text` from the ElevenLabs streaming endpoint."""
-    if not settings.ELEVENLABS_API_KEY:
-        raise VoiceError("ELEVENLABS_API_KEY is not configured")
-    if not settings.ELEVENLABS_VOICE_ID:
-        raise VoiceError("ELEVENLABS_VOICE_ID is not configured")
+    """Stream TTS audio for `text`.
 
+    ElevenLabs first; on any failure (unconfigured, HTTP error, silent)
+    falls back to Google Translate TTS, which returns a single MP3 blob.
+    """
+    if settings.ELEVENLABS_API_KEY and settings.ELEVENLABS_VOICE_ID:
+        try:
+            async for chunk in _speak_elevenlabs(text):
+                yield chunk
+            return
+        except VoiceError:
+            pass  # fall through to gTTS
+
+    try:
+        for chunk in _speak_gtts(text):
+            yield chunk
+    except Exception as exc:  # gTTS can fail without network / on bad input
+        raise VoiceError(f"TTS unavailable: {exc}") from exc
+
+
+async def _speak_elevenlabs(text: str) -> AsyncIterator[bytes]:
     url = ELEVENLABS_TTS_URL.format(voice_id=settings.ELEVENLABS_VOICE_ID)
     payload = {"text": text, "model_id": settings.ELEVENLABS_MODEL_ID}
     timeout = httpx.Timeout(connect=10.0, read=120.0, write=30.0, pool=10.0)
@@ -45,6 +64,23 @@ async def speak(text: str) -> AsyncIterator[bytes]:
                     yield chunk
         except httpx.HTTPError as exc:
             raise VoiceError(f"ElevenLabs TTS failed: {exc}") from exc
+
+
+def _speak_gtts(text: str) -> list[bytes]:
+    """Google Translate TTS — free, keyless, returns a single MP3 blob."""
+    from gtts import gTTS
+
+    buffer = _buffer()
+    tts = gTTS(text=text, lang="en", tld="com")
+    tts.write_to_fp(buffer)
+    data = buffer.getvalue()
+    return [data[i : i + 4096] for i in range(0, len(data), 4096)]
+
+
+def _buffer():
+    from io import BytesIO
+
+    return BytesIO()
 
 
 async def transcribe(audio_bytes: bytes, filename: str = "audio.webm") -> str:

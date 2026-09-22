@@ -25,6 +25,18 @@ async def lifespan(_app: FastAPI):
     Base.metadata.create_all(bind=engine)
     run_migrations()
     check_critical_columns()
+
+    # Idempotent safety net: keep the onboarding lookup catalog (countries /
+    # curriculums / grades / subjects) present. The flow is broken without it.
+    try:
+        from app.core.database import SessionLocal
+        from app.db.seed_onboarding import seed_onboarding
+
+        with SessionLocal() as _db:
+            seed_onboarding(_db)
+    except Exception as exc:  # pragma: no cover - never block boot over a seed
+        logger.warning("onboarding catalog seed skipped: %s", exc)
+
     yield
 
 

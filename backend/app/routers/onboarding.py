@@ -200,6 +200,23 @@ def _persist_extracted(profile: StudentProfile, step_id: str, payload: dict) -> 
         profile.primary_goal = payload.get("goal_summary")
 
 
+def _sync_user_from_profile(db: Session, user: User, profile: StudentProfile | None) -> None:
+    """Propagate stable onboarding facts onto the auth account in the same
+    transaction as the answer, so the dashboard/profile and every downstream
+    feature see the student's name + grade immediately after onboarding."""
+    if profile is None:
+        return
+    if not user.first_name and profile.preferred_name:
+        user.first_name = profile.preferred_name
+    if user.grade is None and profile.grade_id:
+        grade = db.get(Grade, profile.grade_id)
+        if grade is not None and grade.normalized_level:
+            try:
+                user.grade = int(grade.normalized_level)
+            except (TypeError, ValueError):
+                pass
+
+
 class AnswerIn(BaseModel):
     step_id: str
     value: Any = None
@@ -504,7 +521,9 @@ async def submit_answer(
         # All other steps use normal sequential progression
         idx = ONBOARDING_STEPS.index(step)
         nxt = ONBOARDING_STEPS[idx + 1] if idx + 1 < len(ONBOARDING_STEPS) else None
-    
+
+    _sync_user_from_profile(db, user, profile)
+
     if nxt is None:
         user.onboarding_step = DONE_STEP
         user.onboarding_completed_at = datetime.now(timezone.utc)
@@ -647,13 +666,16 @@ def _submit_flow(db: Session, user: User, step_id: str, value: Any) -> dict | No
     profile = _profile(db, user)
     options = _options(db, step, profile)
     by_label = {o["label"]: o["value"] for o in options}
+    # Keep the student's own words for the transcript/summary, while persisting
+    # the normalized catalog value (e.g. subject id) onto the profile below.
+    submitted = value
     if isinstance(value, list):
         value = [by_label.get(v, v) for v in value]
     elif isinstance(value, str):
         value = by_label.get(value, value)
     _validate(step, value, options)
 
-    db.add(OnboardingAnswer(student_id=user.id, step_id=step["id"], raw_value=value))
+    db.add(OnboardingAnswer(student_id=user.id, step_id=step["id"], raw_value=submitted))
 
     if profile is None:
         profile = StudentProfile(student_id=user.id)
@@ -684,6 +706,8 @@ def _submit_flow(db: Session, user: User, step_id: str, value: Any) -> dict | No
     else:
         idx = ONBOARDING_STEPS.index(step)
         nxt = ONBOARDING_STEPS[idx + 1] if idx + 1 < len(ONBOARDING_STEPS) else None
+
+    _sync_user_from_profile(db, user, profile)
 
     if nxt is None:
         user.onboarding_step = DONE_STEP
@@ -903,6 +927,16 @@ async def _finalize_after_onboarding(user_id: int) -> None:
         if not history:
             logger.info("onboarding finalize: no answers recorded for student %s", user_id)
             return
+
+        # Populate the DNA deterministicly from the onboarding context FIRST so
+        # it is never left empty while the LLM-based refinement runs.
+        try:
+            from app.services.career_dna import seed_dna_from_context
+
+            seed_dna_from_context(user, db, history)
+            logger.info("onboarding finalize: Career DNA seeded for %s", user_id)
+        except Exception as exc:
+            print(f"[onboarding] dna seed failed: {exc}")
 
         try:
             await refresh_dna_from_history(user, history, db)

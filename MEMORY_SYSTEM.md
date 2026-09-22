@@ -12,7 +12,7 @@ together, where the data lives, and how to operate/maintain it.
  Student message
       │
       ▼
- Backend (FastAPI, backend/main.py) ──▶ Letta agent (Postgres + archival/vector store)
+ Backend (FastAPI, backend/app/main.py) ──▶ Letta agent (Postgres + archival/vector store)
       │                                        │ (LLM: Gemini)
       │                                        ▼
       │                              Letta agent tries to respond.
@@ -49,7 +49,7 @@ delivers the full recall goal reliably without depending on Letta's agent loop.
 | **Core memory** (always-on "human" profile block) | Letta Postgres: table `block` | `GET http://localhost:8283/v1/agents/{agent_id}/core-memory` |
 | **Chat transcripts** | Letta Postgres: table `messages` | `GET http://localhost:8283/v1/agents/{agent_id}/messages` |
 | **Agent → tools mapping** | Letta Postgres: table `tools_agents` | `GET .../v1/agents/{agent_id}/tools` |
-| **Career DNA / goals / passport** | MySQL `novi_db` (tables `career_dna`, `goals`, ...) | see `backend/main.py` `/api/user/{id}/career-dna` |
+| **Career DNA / goals / passport** | MySQL `novi_db` (tables `career_dna`, `goals`, ...) | see `backend/app/api/career_dna.py` |
 | **App users + `letta_agent_id` link** | MySQL `novi_db` table `users` | |
 
 ### Docker volumes (physical persistence)
@@ -80,7 +80,7 @@ without the student having to repeat themselves.
 
 ## 4. How storage works
 
-After each message, the backend (`backend/main.py`) performs two writes:
+After each message, the backend (`backend/app/main.py`) performs two writes:
 
 ### 4a. Core memory (always-on profile)
 `auto_update_memory` → `GeminiService.extract_student_profile` produces the
@@ -124,7 +124,7 @@ and they repopulate lazily.
 ```bash
 cd backend
 source ../venv/bin/activate
-python main.py          # uvicorn on port 8000
+uvicorn app.main:app    # uvicorn on port 8000
 ```
 Kill an existing backend first: `lsof -t -iTCP:8000 -sTCP:LISTEN | xargs kill`
 

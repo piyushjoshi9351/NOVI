@@ -35,6 +35,19 @@ export function AuthProvider({ children }) {
     setUser(u);
   };
 
+  const refreshUser = async () => {
+    try {
+      const me = await api("/auth/me");
+      if (me) {
+        localStorage.setItem("novi_user", JSON.stringify(me));
+        setUser(me);
+      }
+      return me;
+    } catch (_) {
+      return null;
+    }
+  };
+
   useEffect(() => {
     if (typeof window === "undefined") return;
     const tk = window.localStorage.getItem("novi_token");
@@ -54,7 +67,7 @@ export function AuthProvider({ children }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const value = { token, user, ready, login, logout, patchUser };
+  const value = { token, user, ready, login, logout, patchUser, refreshUser };
   return <AuthCtx.Provider value={value}>{children}</AuthCtx.Provider>;
 }
 

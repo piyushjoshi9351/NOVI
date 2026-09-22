@@ -63,6 +63,10 @@ class User(Base):
     def display_name(self) -> str:
         return f"{self.first_name} {self.last_name}".strip() or self.email
 
+    @property
+    def onboarding_completed(self) -> bool:
+        return self.onboarding_step == "completed" or self.onboarding_completed_at is not None
+
 
 class ParentStudentLink(Base):
     __tablename__ = "parent_student_links"

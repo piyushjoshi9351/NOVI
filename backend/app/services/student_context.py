@@ -24,6 +24,7 @@ from sqlalchemy.orm import Session
 from app.models.onboarding_data import StudentProfile
 from app.models.onboarding_session import OnboardingSession
 from app.models.user import User
+from app.models.catalog import Subject
 
 # Prior-session step id -> (context key, kind). None step = raw value passthrough.
 _SESSION_MAP: dict[str, str] = {
@@ -87,7 +88,7 @@ def norm_country(name: str | None) -> str:
     return _COUNTRY_GROUPS.get(key, key)
 
 
-def _profile_context(profile: StudentProfile | None, ctx: dict) -> None:
+def _profile_context(db: Session, profile: StudentProfile | None, ctx: dict) -> None:
     """Overlay a distilled ``StudentProfile`` (new-engine onboarding) onto the context."""
     if profile is None:
         return
@@ -104,9 +105,9 @@ def _profile_context(profile: StudentProfile | None, ctx: dict) -> None:
     if profile.strengths:
         ctx["strengths"] = _uniq(list(ctx["strengths"]) + list(profile.strengths))
     if profile.enjoyed_subjects:
-        ctx["subjects_enjoyed"] = _uniq(list(ctx["subjects_enjoyed"]) + list(profile.enjoyed_subjects))
+        ctx["subjects_enjoyed"] = _uniq(list(ctx["subjects_enjoyed"]) + _subject_names(db, profile.enjoyed_subjects))
     if profile.difficult_subjects:
-        ctx["subjects_difficult"] = _uniq(list(ctx["subjects_difficult"]) + list(profile.difficult_subjects))
+        ctx["subjects_difficult"] = _uniq(list(ctx["subjects_difficult"]) + _subject_names(db, profile.difficult_subjects))
     if profile.learning_preference:
         ctx["learning_preference"] = profile.learning_preference
     if profile.confidence_choice:
@@ -130,6 +131,18 @@ def _profile_context(profile: StudentProfile | None, ctx: dict) -> None:
 def _join_text(existing: str | None, value: str | None) -> str:
     parts = [str(p).strip() for p in (existing, value) if p and str(p).strip()]
     return " | ".join(parts) if parts else ""
+
+
+def _subject_names(db: Session, subjects: list | None) -> list[str]:
+    """Resolve catalog subject ids (e.g. in-cbse-10-maths) to their display names."""
+    names: list[str] = []
+    for subject_id in subjects or []:
+        key = str(subject_id).strip()
+        if not key:
+            continue
+        subject = db.get(Subject, key)
+        names.append(subject.name if subject is not None else key)
+    return names
 
 
 def load_student_context(db: Session, user: User) -> dict:
@@ -202,7 +215,7 @@ def load_student_context(db: Session, user: User) -> dict:
             if m:
                 ctx["grade_level"] = int(m.group(1))
 
-    _profile_context(db.scalar(select(StudentProfile).where(StudentProfile.student_id == user.id)), ctx)
+    _profile_context(db, db.scalar(select(StudentProfile).where(StudentProfile.student_id == user.id)), ctx)
 
     if user.grade is None and ctx["grade_level"] is None:
         m = _GRADE_RE.search(ctx.get("grade_level_raw") or "")

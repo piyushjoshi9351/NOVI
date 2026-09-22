@@ -3,11 +3,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { ArrowRight, Check, Loader2, Mic, Send, Sparkles, Volume2, VolumeX, X } from "lucide-react";
-import { api, API, getApiToken, initials } from "../api";
+import { ArrowRight, Check, Loader2, Send, Sparkles, Volume2, VolumeX, X } from "lucide-react";
+import { api, initials } from "../api";
 import { useAuth } from "../auth";
 import { toast } from "../ui";
-import { stopAll, webSpeak } from "../speech";
+import { stopAll, speakText, onSpeakStateChange, VOICE_KEY } from "../speech";
 
 const GREETING =
   "Hi, I'm Novi 👋\n\nBefore I start helping you, I want to get to know you.\nThere are no right or wrong answers. You don't need to know what you want to become.\nJust be yourself — I'll figure out the rest.";
@@ -15,20 +15,23 @@ const GREETING =
 const WELCOME_PATH = "https://novi.socratic.school";
 
 export default function OnboardingPage() {
-  const { user } = useAuth();
+  const { user, refreshUser } = useAuth();
   const router = useRouter();
   const [flow, setFlow] = useState(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [draft, setDraft] = useState("");
   const [selected, setSelected] = useState([]);
-  const [voiceOn, setVoiceOn] = useState(false);
-  const [recording, setRecording] = useState(false);
+  const [voiceOn, setVoiceOn] = useState(() => {
+    if (typeof window === "undefined") return false;
+    const stored = window.localStorage.getItem(VOICE_KEY);
+    return stored === "1";
+  });
+  const [speaking, setSpeaking] = useState(false);
+  const [introDone, setIntroDone] = useState(false);
   const logRef = useRef(null);
-  const audioRef = useRef(null);
-  const speakCtl = useRef(null);
-  const micRef = useRef({ recorder: null, chunks: [], stream: null, cancelled: false });
-  const micHold = useRef(false);
+  const voiceOnRef = useRef(voiceOn);
+  voiceOnRef.current = voiceOn;
 
   const firstName = user?.first_name?.split(" ")[0] || "there";
 
@@ -65,7 +68,20 @@ export default function OnboardingPage() {
     setDraft("");
   }, [flow?.current?.id]);
 
+  // Onboarding is finished: refresh the auth user so the app unlocks the
+  // dashboard/nav, then hand over to the dashboard (short pause so the
+  // completion summary stays readable).
+  useEffect(() => {
+    if (!flow?.done) return;
+    refreshUser();
+    const t = window.setTimeout(() => router.replace("/dashboard"), 1600);
+    return () => window.clearTimeout(t);
+  }, [flow?.done, refreshUser, router]);
+
   useEffect(() => () => stopAll(), []);
+
+  // Track when Novi's voice is actually playing so the orb can glow/talk.
+  useEffect(() => onSpeakStateChange(setSpeaking), []);
 
   const submit = useCallback(
     async (body) => {
@@ -102,179 +118,92 @@ export default function OnboardingPage() {
     }
   }, [busy, flow, apply]);
 
-  // ---- voice: playback (ElevenLabs, fallback to browser speechSynthesis) ----
-  const playQuestion = useCallback(
-    async (text) => {
-      if (!voiceOn || !text) return;
-      speakCtl.current?.abort();
-      const ctl = new AbortController();
-      speakCtl.current = ctl;
-      const audio = audioRef.current;
-      if (audio) {
-        audio.pause();
-        audio.currentTime = 0;
-      }
-      try {
-        const res = await fetch(`${API}/onboarding/voice/speak`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            ...(getApiToken() ? { Authorization: `Bearer ${getApiToken()}` } : {}),
-          },
-          body: JSON.stringify({ text }),
-          signal: ctl.signal,
-        });
-        if (!res.ok) throw new Error(`voice unavailable (${res.status})`);
-        if (!/audio|octet-stream/i.test(res.headers.get("content-type") || "")) throw new Error("voice returned non-audio");
-        const blob = await res.blob();
-        if (!blob.size) throw new Error("voice returned empty audio");
-        const el = audioRef.current;
-        if (!el) throw new Error("no audio element");
-        const url = URL.createObjectURL(blob);
-        el.onended = () => URL.revokeObjectURL(url);
-        el.onerror = () => URL.revokeObjectURL(url);
-        el.src = url;
-        await el.play();
-      } catch (err) {
-        if (err && err.name === "AbortError") return;
-        if (!ctl.signal.aborted) {
-          toast("Voice playback unavailable", "err");
-          webSpeak(text);
-        }
-      } finally {
-        if (speakCtl.current === ctl) speakCtl.current = null;
-      }
-    },
-    [voiceOn],
-  );
+  // ---- voice: playback (server-rendered audio with a browser fallback) ----
+  const warnedSpeech = useRef(false);
+  const playQuestion = useCallback((text, onDone, onInterrupt) => {
+    if (!text) {
+      if (onDone) onDone();
+      return;
+    }
+    if (!voiceOnRef.current) return; // voice off — never start speech
+    speakText(text, {
+      onDone,
+      onInterrupt,
+      onError: () => {
+        if (warnedSpeech.current) return;
+        warnedSpeech.current = true;
+        toast("Novi's voice couldn't start here — you can always read the questions", "err");
+      },
+    });
+  }, []);
 
-  // Speak the current question whenever voice mode is on and it changes.
+  // Read the greeting first, then the current question — unless the greeting
+  // is cut short (answering), or the step moved on while it played.
+  const stepIdRef = useRef(null);
+  stepIdRef.current = flow?.current?.id;
+  const readGreetingThenQuestion = useCallback(() => {
+    const q = flow?.current?.question;
+    const stepId = flow?.current?.id;
+    if (!q) {
+      playQuestion(GREETING);
+      return;
+    }
+    playQuestion(GREETING, () => {
+      if (!voiceOnRef.current || stepIdRef.current !== stepId) return;
+      playQuestion(q);
+    });
+  }, [flow, playQuestion]);
+
+  // Speak the current question whenever it changes (only while voice is on).
+  // On the very first view the greeting is read first, then the first question.
+  const freshGreeting = flow && !loading && !flow?.done && (flow.transcript || []).length === 0;
+  const spokeGreeting = useRef(false);
   useEffect(() => {
+    if (freshGreeting && voiceOn && !spokeGreeting.current) {
+      spokeGreeting.current = true;
+      readGreetingThenQuestion();
+      return;
+    }
+    if (freshGreeting) return;
     if (voiceOn && flow?.current?.question) playQuestion(flow.current.question);
-  }, [voiceOn, flow?.current?.id, playQuestion]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [freshGreeting, flow?.current?.id, playQuestion, readGreetingThenQuestion]);
+
+  const toggleVoice = () => {
+    const next = !voiceOn;
+    voiceOnRef.current = next;
+    setVoiceOn(next);
+    try {
+      window.localStorage.setItem(VOICE_KEY, next ? "1" : "0");
+    } catch (_) {
+      /* ignore */
+    }
+    if (next) {
+      if (flow && !flow.done && (flow.transcript || []).length === 0) {
+        readGreetingThenQuestion();
+      } else if (flow?.current?.question) {
+        playQuestion(flow.current.question);
+      }
+    } else {
+      stopAll();
+    }
+  };
 
   // Turning voice off (or unmounting) cuts playback, in-flight speak and mic.
   useEffect(() => {
-    if (!voiceOn) {
-      speakCtl.current?.abort();
-      const a = audioRef.current;
-      if (a) {
-        a.pause();
-        a.currentTime = 0;
-      }
-    }
+    if (!voiceOn) stopAll();
   }, [voiceOn]);
 
   useEffect(
     () => () => {
-      speakCtl.current?.abort();
-      audioRef.current?.pause();
-      if (micRef.current.recorder) micRef.current.recorder.state !== "inactive" && micRef.current.recorder.stop();
-      micRef.current.stream?.getTracks().forEach((t) => t.stop());
+      stopAll();
     },
     [],
   );
 
-  // ---- voice: mic input (hold-to-talk; barge-in) ----
-  const transcribeVoice = async (blob) => {
-    const fd = new FormData();
-    fd.append("file", blob, "voice.webm");
-    const res = await fetch(`${API}/onboarding/voice/transcribe`, {
-      method: "POST",
-      headers: getApiToken() ? { Authorization: `Bearer ${getApiToken()}` } : {},
-      body: fd,
-    });
-    if (!res.ok) throw new Error("Transcription failed");
-    const data = await res.json();
-    return (data && data.text ? data.text : "").trim();
-  };
-
-  const submitVoice = useCallback(
-    async (transcript) => {
-      if (!flow?.current) return;
-      const res = await api("/onboarding/voice/answer", {
-        method: "POST",
-        body: JSON.stringify({ step_id: flow.current.id, transcript }),
-      });
-      if (res && res.resolved === true) {
-        apply(res);
-      } else if (res) {
-        toast(res.error || "I couldn't understand that — try again", "err");
-      } else {
-        throw new Error("No response from voice answer");
-      }
-    },
-    [flow, apply],
-  );
-
-  const beginMic = useCallback(async () => {
-    if (busy || recording || micHold.current) return;
-    micHold.current = true;
-    const audio = audioRef.current;
-    if (audio) {
-      audio.pause();
-      audio.currentTime = 0;
-    }
-    speakCtl.current?.abort();
-    speakCtl.current = null;
-    setRecording(true);
-    micRef.current = { recorder: null, chunks: [], stream: null, cancelled: false };
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      if (micRef.current.cancelled) {
-        stream.getTracks().forEach((t) => t.stop());
-        micHold.current = false;
-        return;
-      }
-      const recorder = new MediaRecorder(stream);
-      const chunks = [];
-      recorder.ondataavailable = (e) => {
-        if (e.data && e.data.size) chunks.push(e.data);
-      };
-      recorder.onstop = async () => {
-        setRecording(false);
-        try {
-          const blob = new Blob(chunks, { type: recorder.mimeType || "audio/webm" });
-          const text = await transcribeVoice(blob);
-          if (text) await submitVoice(text);
-          else toast("I couldn't hear that — try again", "err");
-        } catch (err) {
-          toast(err.message || "Voice failed — try again or type instead", "err");
-        }
-      };
-      recorder.onerror = (e) => {
-        toast(e && e.error && e.error.message ? e.error.message : "Recording failed", "err");
-        setRecording(false);
-      };
-      micRef.current.stream = stream;
-      micRef.current.recorder = recorder;
-      recorder.start();
-    } catch (err) {
-      const name = err && err.name;
-      toast(
-        name === "NotAllowedError" || name === "NotFoundError"
-          ? "Microphone unavailable"
-          : "Couldn't start microphone",
-        "err",
-      );
-      setRecording(false);
-      micHold.current = false;
-    }
-  }, [busy, recording, submitVoice]);
-
-  const endMic = useCallback(() => {
-    const { recorder, stream } = micRef.current;
-    micHold.current = false;
-    micRef.current.cancelled = true;
-    if (recorder && recorder.state !== "inactive") recorder.stop();
-    if (stream) stream.getTracks().forEach((t) => t.stop());
-    micRef.current = { recorder: null, chunks: [], stream: null, cancelled: false };
-    if (!recorder) setRecording(false);
-  }, []);
-
   if (loading) {
     return (
-      <div className="chat-shell">
+      <div className="chat-shell onboard">
         <div className="chat-main ob-loading">
           <Loader2 size={22} className="spin" />
         </div>
@@ -314,22 +243,23 @@ export default function OnboardingPage() {
   };
 
   return (
-    <div className="chat-shell">
+    <div className="chat-shell onboard">
       <section className="chat-main ob-main">
+        {fresh && !introDone ? <NoviIntro name={firstName} onComplete={() => setIntroDone(true)} /> : null}
         <header className="chat-head">
-          <div className="chat-avatar" aria-hidden="true">N</div>
+          <NoviOrb speaking={speaking} active={voiceOn} />
           <div className="chat-head-info">
             <div className="chat-head-name">Get to know you</div>
             <div className="chat-head-status">
               <span className="chat-dot" aria-hidden="true" />
-              {cur?.section || "Novi is listening"}
+              {speaking ? "Novi is speaking" : cur?.section || "Novi is listening"}
             </div>
           </div>
           <div className="chat-head-actions">
             <button
               type="button"
               className={`chat-head-btn${voiceOn ? " on" : ""}`}
-              onClick={() => setVoiceOn((v) => !v)}
+              onClick={toggleVoice}
               title={voiceOn ? "Turn voice off" : "Turn voice on"}
               aria-pressed={voiceOn}
             >
@@ -392,35 +322,7 @@ export default function OnboardingPage() {
           ) : null}
         </div>
 
-        <audio ref={audioRef} hidden />
-
         <div className="ob-composer">
-          {voiceOn && cur ? (
-            <div className="ob-voicebar">
-              <button
-                type="button"
-                className={`ob-mic${recording ? " rec" : ""}`}
-                onPointerDown={(e) => {
-                  e.preventDefault();
-                  beginMic();
-                }}
-                onPointerUp={() => endMic()}
-                onPointerCancel={() => endMic()}
-                onPointerLeave={() => {
-                  if (recording) endMic();
-                }}
-                onContextMenu={(e) => e.preventDefault()}
-                disabled={busy}
-                title={recording ? "Release to stop and transcribe" : "Hold to talk"}
-                aria-label="Hold to talk"
-              >
-                {recording ? <Loader2 size={18} className="spin" /> : <Mic size={18} />}
-              </button>
-              <span className="ob-hint">
-                {recording ? "Listening… release to transcribe" : "Hold to talk"}
-              </span>
-            </div>
-          ) : null}
           {isMulti ? (
             <MultiPicker
               cur={cur}
@@ -559,13 +461,85 @@ function FreeComposer({ cur, draft, setDraft, send, skip, busy }) {
   );
 }
 
+function NoviOrb({ speaking, active }) {
+  // A rich, chrome-like voice blob. While Novi talks it blooms large with a
+  // liquid SVG goo, fast jaw-pulsing core, expanding ripples and floating
+  // sparks; when silent it animates back down to a calm resting orb.
+  const mode = speaking ? "talking" : active ? "on" : "";
+  const label = speaking ? "Novi is speaking" : "Novi";
+  return (
+    <div className={`ob-orb${mode ? ` ${mode}` : ""}`} role="img" aria-label={label}>
+      <span className="ob-orb-aura" aria-hidden="true" />
+      <span className="ob-orb-ring" aria-hidden="true" />
+      <span className="ob-orb-ring r2" aria-hidden="true" />
+      <svg className="ob-orb-goo" viewBox="0 0 200 200" aria-hidden="true">
+        <g transform="translate(100 100)">
+          <circle className="goo-a" r="66" />
+          <circle className="goo-b" r="44" />
+        </g>
+      </svg>
+      <span className="ob-orb-core" aria-hidden="true" />
+      <span className="ob-orb-ping" aria-hidden="true" />
+      <img className="ob-orb-logo" src="/icon.png" alt="" aria-hidden="true" />
+      <i className="ob-spark s0" aria-hidden="true" />
+      <i className="ob-spark s1" aria-hidden="true" />
+      <i className="ob-spark s2" aria-hidden="true" />
+      <i className="ob-spark s3" aria-hidden="true" />
+      <i className="ob-spark s4" aria-hidden="true" />
+      <i className="ob-spark s5" aria-hidden="true" />
+    </div>
+  );
+}
+
+function NoviIntro({ name, onComplete }) {
+  // Entry splash for brand-new students: Novi's avatar pops in, waves, and
+  // greets them before the first question is revealed.
+  const [leaving, setLeaving] = useState(false);
+  const firstName = name && name !== "there" ? name : "";
+
+  const finish = () => {
+    if (leaving) return;
+    setLeaving(true);
+    setTimeout(onComplete, 550); // wait for the fade-out
+  };
+
+  useEffect(() => {
+    const t = setTimeout(finish, 3600);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  return (
+    <div className={`ob-intro${leaving ? " leave" : ""}`} aria-label="Welcome to Novi">
+      <span className="ob-intro-glow" aria-hidden="true" />
+      <div className="ob-intro-ava">
+        <span className="ob-intro-ring" aria-hidden="true" />
+        <span className="ob-intro-ring r2" aria-hidden="true" />
+        <span className="ob-intro-halo" aria-hidden="true" />
+        <img src="/boy.png" alt="" aria-hidden="true" />
+        <span className="ob-intro-wave" aria-hidden="true">👋</span>
+      </div>
+      <h1 className="ob-intro-title">
+        Hi, I'm Novi{firstName ? `, ${firstName}` : ""}!
+      </h1>
+      <p className="ob-intro-sub">Let's get to know you better.</p>
+      <div className="ob-intro-dots" aria-hidden="true">
+        <i /><i /><i />
+      </div>
+      <button type="button" className="ob-intro-cta" onClick={finish}>
+        Let's get started <ArrowRight size={15} />
+      </button>
+    </div>
+  );
+}
+
 function Reveal({ flow, firstName }) {
   const s = flow.summary || {};
   const rec = s.recommendations || {};
   const plan = s.plan_30 || [];
   const name = firstName === "there" ? "" : `${firstName}, `;
   return (
-    <div className="chat-shell">
+    <div className="chat-shell onboard">
       <section className="chat-main ob-main">
         <div className="ob-reveal">
           <div className="ob-reveal-hero">

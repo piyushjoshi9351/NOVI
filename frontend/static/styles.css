@@ -2016,6 +2016,307 @@ textarea.sheet-input { resize: vertical; }
   .ob-progress-wrap { flex-direction: column; gap: 4px; align-items: flex-end; }
 }
 
+/* ---------------------------------------------------------------- onboarding voice orb */
+.ob-orb {
+  --orb: 46px;
+  --orb-talk: 2.15;
+  position: relative; width: var(--orb); height: var(--orb); flex-shrink: 0;
+  cursor: default; isolation: isolate; z-index: 5;
+  transform-origin: 50% 120%;
+  transition: transform 0.55s cubic-bezier(0.2, 1.4, 0.35, 1), filter 0.45s ease;
+}
+/* ---- talking: a large bloom that sits a little lower and eases out
+        when silent — no bounce ---- */
+.ob-orb.talking {
+  z-index: 30;
+  transform: scale(var(--orb-talk)) translate3d(0, 9px, 0);
+  filter: drop-shadow(0 0 14px rgba(196, 181, 253, 0.55)) drop-shadow(0 0 40px rgba(214, 221, 255, 0.5));
+}
+
+/* aura: soft halo behind the talking blob — stays calm */
+.ob-orb-aura {
+  position: absolute; inset: -38%; border-radius: 999px; pointer-events: none;
+  background: radial-gradient(circle, rgba(255, 255, 255, 0.75), rgba(196, 181, 253, 0.28) 46%, transparent 72%);
+  opacity: 0; filter: blur(10px); transform: scale(0.6);
+  transition: transform 0.6s ease, opacity 0.5s ease;
+}
+.ob-orb.talking .ob-orb-aura {
+  opacity: 1; transform: scale(1);
+}
+
+/* subtle sound ripples — one soft ping, not a loud pulse */
+.ob-orb-ring {
+  position: absolute; inset: -2px; border-radius: 999px; pointer-events: none;
+  border: 1.5px solid rgba(255, 255, 255, 0.55); opacity: 0;
+}
+.ob-orb.talking .ob-orb-ring { animation: obRing 2.4s ease-out infinite; }
+.ob-orb.talking .ob-orb-ring.r2 { animation: none; }
+@keyframes obRing {
+  0% { transform: scale(0.8); opacity: 0.4; }
+  100% { transform: scale(1.45); opacity: 0; }
+}
+
+/* liquid goo blob (only visible while talking) */
+.ob-orb-goo {
+  position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible;
+  opacity: 0; transition: opacity 0.35s ease; pointer-events: none;
+}
+.ob-orb.talking .ob-orb-goo { opacity: 1; }
+.ob-orb-goo .goo-a { fill: #ffffff; fill-opacity: 0.92; }
+.ob-orb-goo .goo-b { fill: #eef1ff; fill-opacity: 0.5; }
+
+/* Novi logo centered on the blob */
+.ob-orb-logo {
+  position: absolute; left: 50%; top: 50%;
+  width: 62%; height: 62%;
+  transform: translate(-50%, -50%);
+  object-fit: contain; pointer-events: none;
+  border-radius: 26%;
+  filter: drop-shadow(0 2px 6px rgba(0, 0, 0, 0.35));
+}
+
+/* circling ping — a bright gradient arc that orbits the blob edge while talking */
+.ob-orb-ping {
+  position: absolute; inset: -4px; border-radius: 999px; pointer-events: none;
+  opacity: 0; transition: opacity 0.3s ease;
+  background: conic-gradient(
+    from 0deg,
+    transparent 0deg,
+    #a78bfa 28deg,
+    #38bdf8 64deg,
+    #e879f9 100deg,
+    rgba(255, 255, 255, 0) 140deg,
+    transparent 360deg
+  );
+  -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 8px), #000 calc(100% - 2px));
+  mask: radial-gradient(farthest-side, transparent calc(100% - 8px), #000 calc(100% - 2px));
+  filter: drop-shadow(0 0 6px rgba(167, 139, 250, 0.8));
+}
+.ob-orb.talking .ob-orb-ping {
+  opacity: 1;
+  animation: obPingOrbit 1.5s linear infinite;
+}
+@keyframes obPingOrbit { to { transform: rotate(360deg); } }
+
+/* light glossy core — the resting face of the orb (keeps the purple logo crisp) */
+.ob-orb-core {
+  position: absolute; inset: 4px; border-radius: 999px;
+  background:
+    radial-gradient(120% 110% at 28% 20%, #ffffff, #f4f1ff 38%, #dee5ff 78%, #d4dbff);
+  box-shadow: 0 8px 24px rgba(124, 92, 255, 0.28), inset 0 1px 0 rgba(255, 255, 255, 0.9);
+  transform-origin: 50% 85%;
+  transition: box-shadow 0.3s ease;
+}
+.ob-orb.on .ob-orb-core { animation: orbBreathe 2.4s ease-in-out infinite; }
+.ob-orb.talking .ob-orb-core {
+  /* uniform breathing — the blob always stays a perfect circle */
+  animation: obTalkPulse 0.9s ease-in-out infinite;
+  box-shadow: 0 0 30px rgba(255, 255, 255, 0.9), 0 0 60px rgba(196, 181, 253, 0.55),
+    inset 0 2px 3px rgba(255, 255, 255, 1), inset 0 -2px 6px rgba(214, 221, 255, 0.8);
+}
+.ob-orb.talking .ob-orb-core::after {
+  content: ""; position: absolute; inset: 18%; border-radius: 999px;
+  background: conic-gradient(from 90deg, transparent, rgba(255, 255, 255, 0.5), transparent 40%);
+  animation: obSpin 1.1s linear infinite;
+}
+@keyframes obTalkPulse {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.09); }
+}
+@keyframes orbBreathe { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.08); } }
+@keyframes orbSpin { to { transform: rotate(360deg); } }
+
+/* floating sparks while talking */
+.ob-spark {
+  position: absolute; width: 5px; height: 5px; border-radius: 999px;
+  background: linear-gradient(135deg, #ffe3b3, #ff9d5c);
+  box-shadow: 0 0 8px rgba(255, 190, 120, 0.9); pointer-events: none;
+  opacity: 0;
+}
+.ob-orb.talking .ob-spark { animation: obSpark 1.8s ease-in-out infinite; }
+.ob-orb.talking .ob-spark.s0 { top: -8%; left: 16%; }
+.ob-orb.talking .ob-spark.s1 { top: 6%; left: -12%; }
+.ob-orb.talking .ob-spark.s2 { top: 22%; right: -14%; }
+.ob-orb.talking .ob-spark.s3 { top: -2%; right: 8%; }
+.ob-orb.talking .ob-spark.s4 { bottom: 4%; left: -6%; }
+.ob-orb.talking .ob-spark.s5 { bottom: -8%; right: 6%; }
+.ob-orb.talking .ob-spark.s0 { animation-delay: 0s; --dx: 10px; --dy: -14px; }
+.ob-orb.talking .ob-spark.s1 { animation-delay: 0.22s; --dx: 12px; --dy: -10px; }
+.ob-orb.talking .ob-spark.s2 { animation-delay: 0.48s; --dx: -10px; --dy: -14px; }
+.ob-orb.talking .ob-spark.s3 { animation-delay: 0.8s; --dx: -8px; --dy: -18px; }
+.ob-orb.talking .ob-spark.s4 { animation-delay: 1.05s; --dx: 9px; --dy: -9px; }
+.ob-orb.talking .ob-spark.s5 { animation-delay: 1.4s; --dx: -7px; --dy: -13px; }
+@keyframes obSpark {
+  0% { transform: translate(0, 0) scale(0.5); opacity: 0; }
+  20% { opacity: 1; }
+  65% { transform: translate(var(--dx, 8px), var(--dy, -12px)) scale(1); opacity: 0.95; }
+  100% { transform: translate(calc(var(--dx, 8px) * 1.7), calc(var(--dy, -12px) * 1.7)) scale(0.35); opacity: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ob-orb.talking { transform: scale(1.35) translate3d(0, 9px, 0); }
+  .ob-orb-core, .ob-orb .ob-spark, .ob-orb .ob-orb-ring, .ob-orb .ob-orb-aura,
+  .ob-orb .ob-orb-ping, .ob-orb-goo * { animation: none !important; }
+}
+
+/* ---------------------------------------------------------------- onboarding large screens */
+.app-onboarding { grid-template-columns: 1fr; }
+.app-onboarding .view { padding-top: 26px; }
+.chat-shell.onboard {
+  justify-content: center;
+  height: calc(100vh - 126px);
+  min-height: 520px;
+}
+.chat-shell.onboard .chat-main {
+  /* let the speaking orb float past the card edges instead of clipping */
+  overflow: visible;
+}
+.chat-shell.onboard .chat-head { border-radius: var(--radius) var(--radius) 0 0; }
+.chat-shell.onboard .chat-main { max-width: 880px; width: 100%; }
+.chat-shell.onboard .chat-stack { max-width: 76%; }
+@media (max-width: 880px) {
+  .chat-shell.onboard { height: calc(100vh - 106px); margin-bottom: 0; }
+  .ob-orb { --orb: 40px; --orb-talk: 1.9; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ob-orb-core { animation: none !important; }
+}
+
+/* ---------------------------------------------------------------- onboarding entry splash */
+.ob-intro {
+  position: absolute; inset: 0; z-index: 40;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  text-align: center; padding: 24px; overflow: hidden;
+  background:
+    radial-gradient(120% 100% at 50% 0%, rgba(139, 108, 255, 0.14), transparent 55%),
+    radial-gradient(90% 80% at 50% 110%, rgba(74, 199, 240, 0.1), transparent 60%),
+    var(--panel);
+  border-radius: var(--radius);
+  backdrop-filter: blur(6px);
+  opacity: 1; transform: scale(1);
+  transition: opacity 0.55s cubic-bezier(0.16, 1, 0.3, 1), transform 0.55s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.ob-intro.leave { opacity: 0; transform: scale(1.05); pointer-events: none; }
+
+.ob-intro-glow {
+  position: absolute; left: 50%; top: 34%; width: 340px; height: 340px;
+  transform: translate(-50%, -50%); border-radius: 999px; pointer-events: none;
+  background: radial-gradient(circle, rgba(139, 108, 255, 0.22), rgba(74, 199, 240, 0.08) 55%, transparent 72%);
+  filter: blur(12px);
+  animation: obIntroGlow 3.6s ease-in-out infinite;
+}
+@keyframes obIntroGlow {
+  0%, 100% { transform: translate(-50%, -50%) scale(1); opacity: 0.85; }
+  50% { transform: translate(-50%, -50%) scale(1.18); opacity: 1; }
+}
+
+/* avatar + rings */
+.ob-intro-ava {
+  position: relative; width: 128px; height: 128px; margin-bottom: 18px;
+  animation: obIntroPop 0.7s cubic-bezier(0.2, 1.4, 0.35, 1) both;
+}
+.ob-intro-ava img {
+  position: relative; z-index: 2; width: 100%; height: 100%; object-fit: cover;
+  border-radius: 999px;
+  box-shadow: 0 18px 44px rgba(139, 108, 255, 0.5), 0 0 0 4px rgba(255, 255, 255, 0.06), 0 0 0 1px rgba(139, 108, 255, 0.5);
+  animation: obIntroBob 3.4s ease-in-out 1s infinite;
+}
+@keyframes obIntroPop {
+  0% { transform: scale(0.25) translateY(18px); opacity: 0; }
+  60% { transform: scale(1.06) translateY(0); opacity: 1; }
+  100% { transform: scale(1); opacity: 1; }
+}
+@keyframes obIntroBob {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-8px); }
+}
+
+.ob-intro-halo {
+  position: absolute; inset: -32px; border-radius: 999px; pointer-events: none;
+  background: radial-gradient(circle, rgba(139, 108, 255, 0.45), rgba(74, 199, 240, 0.16) 52%, transparent 75%);
+  filter: blur(6px);
+  animation: obIntroHalo 3.4s ease-in-out infinite;
+}
+@keyframes obIntroHalo {
+  0%, 100% { transform: scale(1); opacity: 0.9; }
+  50% { transform: scale(1.12); opacity: 1; }
+}
+
+.ob-intro-ring {
+  position: absolute; inset: -6px; border-radius: 999px; pointer-events: none;
+  border: 1.5px solid rgba(167, 139, 250, 0.55);
+  animation: obIntroRing 2.8s ease-out infinite;
+}
+.ob-intro-ring.r2 { animation-delay: 1.4s; }
+@keyframes obIntroRing {
+  0% { transform: scale(0.86); opacity: 0.7; }
+  100% { transform: scale(1.4); opacity: 0; }
+}
+
+.ob-intro-wave {
+  position: absolute; z-index: 3; top: 2px; right: 0; font-size: 34px; line-height: 1;
+  filter: drop-shadow(0 4px 8px rgba(0, 0, 0, 0.35));
+  transform-origin: 70% 80%;
+  animation: obIntroWave 1.6s ease-in-out 0.7s infinite;
+}
+@keyframes obIntroWave {
+  0%, 55%, 100% { transform: rotate(0deg); }
+  12%, 36% { transform: rotate(20deg); }
+  24%, 48% { transform: rotate(-8deg); }
+}
+
+/* copy */
+.ob-intro-title {
+  margin: 0; font-size: clamp(28px, 5vw, 42px); font-weight: 900; letter-spacing: -0.03em;
+  color: var(--text);
+  background: linear-gradient(120deg, var(--text) 0%, #cfc4ff 75%, #8fd7f7 100%);
+  -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;
+  text-shadow: 0 0 24px rgba(139, 108, 255, 0.25);
+  animation: obIntroUp 0.7s cubic-bezier(0.16, 1, 0.3, 1) 0.35s both;
+}
+.ob-intro-sub {
+  margin: 12px 0 0; font-size: clamp(15px, 2.4vw, 19px); color: var(--muted); font-weight: 600;
+  animation: obIntroUp 0.7s cubic-bezier(0.16, 1, 0.3, 1) 0.75s both;
+}
+@keyframes obIntroUp {
+  from { transform: translateY(16px); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
+}
+
+.ob-intro-dots { display: flex; gap: 6px; margin-top: 22px; animation: obIntroUp 0.7s ease 1.05s both; }
+.ob-intro-dots i {
+  width: 7px; height: 7px; border-radius: 999px;
+  background: rgba(167, 139, 250, 0.9);
+  animation: obIntroDot 1.4s ease-in-out infinite;
+}
+.ob-intro-dots i:nth-child(2) { animation-delay: 0.2s; background: rgba(74, 199, 240, 0.9); }
+.ob-intro-dots i:nth-child(3) { animation-delay: 0.4s; background: rgba(52, 211, 153, 0.9); }
+@keyframes obIntroDot {
+  0%, 100% { transform: translateY(0); opacity: 0.4; }
+  40% { transform: translateY(-6px); opacity: 1; }
+}
+
+.ob-intro-cta {
+  display: inline-flex; align-items: center; gap: 8px; margin-top: 26px;
+  padding: 12px 24px; border: 0; border-radius: 999px; font: inherit; font-size: 14.5px; font-weight: 700;
+  background: var(--grad); color: var(--on-brand); cursor: pointer;
+  box-shadow: 0 10px 26px rgba(139, 108, 255, 0.45);
+  animation: obIntroUp 0.7s cubic-bezier(0.16, 1, 0.3, 1) 1.15s both;
+  transition: transform 0.12s ease, filter 0.16s ease, box-shadow 0.18s ease;
+}
+.ob-intro-cta:hover { filter: brightness(1.07); box-shadow: 0 12px 32px rgba(139, 108, 255, 0.55); }
+.ob-intro-cta:active { transform: scale(0.97); }
+
+@media (max-width: 620px) {
+  .ob-intro-ava { width: 96px; height: 96px; margin-bottom: 14px; }
+  .ob-intro-wave { font-size: 26px; top: 0; right: -2px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ob-intro-glow, .ob-intro-ring, .ob-intro-halo, .ob-intro-ava img, .ob-intro-wave,
+  .ob-intro-dots i { animation: none !important; }
+  .ob-intro.leave { transition-duration: 0.25s; }
+}
+
 .spin { animation: obSpin 0.85s linear infinite; }
 @keyframes obSpin { to { transform: rotate(360deg); } }
 

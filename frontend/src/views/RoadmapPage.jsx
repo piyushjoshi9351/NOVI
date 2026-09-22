@@ -1,68 +1,35 @@
 import { useCallback, useEffect, useState } from "react";
-import { api, bellTime, esc, getDnaContext, m3AdaptLabel, m3DateRange, prettyDate, ringColor, STAGE_META } from "../api";
+import { api, bellTime, esc, prettyDate, ringColor, STAGE_META } from "../api";
 import { useAuth } from "../auth";
-import { EmptyState, Kicker, Pill, Ring, showLoader, toast } from "../ui";
+import { EmptyState, Kicker, Pill, showLoader, toast } from "../ui";
 
-let _rmGoalId = null, _rmTaskFilter = "all", _adaptActions = [];
-
-function m3TaskRow(t, onAction) {
-  const done = t.status === "completed";
-  const tone = done ? "good" : t.status === "active" ? "mid" : t.status === "skipped" ? "bad" : "";
-  const busy = t._busy;
-  return (
-    <div className={`rm-item ${done ? "done" : ""}`} key={t.id}>
-      <div className="rm-body">
-        <div className="rm-top">
-          <b>{esc(t.title)}</b>
-          <span className={`pill ${tone}`}>{esc(t.status)}</span>
-          {t.priority && t.priority !== "medium" ? <span className={`rm-stage stage-${t.priority === "high" ? "build" : "explore"}`}>{esc(t.priority)}</span> : null}
-        </div>
-        {t.description ? <p className="small muted rm-desc">{esc(t.description)}</p> : null}
-        {t.target_date ? <div className="small muted rm-desc">due {prettyDate(t.target_date)}</div> : null}
-      </div>
-      <div className="row m3-actions">
-        {t.status === "pending" ? <button className="btn-ghost small" disabled={busy} onClick={() => onAction(t, "start")}>Start</button> : null}
-        {t.status === "pending" || t.status === "active" ? <button className="btn small" disabled={busy} onClick={() => onAction(t, "complete")}>Done</button> : null}
-        {t.status === "pending" ? <button className="btn-ghost small" disabled={busy} onClick={() => onAction(t, "skip")}>Skip</button> : null}
-      </div>
-    </div>
-  );
-}
+let _rmGoalId = null, _rmTaskFilter = "all";
 
 export default function RoadmapPage() {
   const { user } = useAuth();
-  const [dctx, setDctx] = useState(null);
   const [base, setBase] = useState(null); // {goals, priorities, tasks}
   const [goalId, setGoalId] = useState(_rmGoalId);
   const [taskFilter, setTaskFilter] = useState(_rmTaskFilter);
   const [roadmap, setRoadmap] = useState({ goal: null, stages: {}, progress_percent: 0 });
-  const [v2, setV2] = useState(null);
   const [error, setError] = useState(null);
   const [goalAddOpen, setGoalAddOpen] = useState(false);
   const [goalTitle, setGoalTitle] = useState("");
   const [goalCat, setGoalCat] = useState("career");
   const [taskTitle, setTaskTitle] = useState("");
   const [taskCat, setTaskCat] = useState("build");
-  const [adapt, setAdapt] = useState(null); // {assessment, reasoning, actions[]}
-  const [adaptChecks, setAdaptChecks] = useState([]);
-  const [busyBtns, setBusyBtns] = useState({});
-  const [genBusy, setGenBusy] = useState(false);
   const [genText, setGenText] = useState("");
   const [prioBusy, setPrioBusy] = useState(false);
-  const [adaptBusy, setAdaptBusy] = useState(false);
 
   useEffect(() => {
     let alive = true;
     showLoader(true);
     Promise.all([
-      getDnaContext(),
       api("/roadmap/goals").catch(() => []),
       api("/roadmap/priorities").catch(() => []),
       api("/roadmap/tasks").catch(() => []),
     ])
-      .then(([d, goals, priorities, tasks]) => {
+      .then(([goals, priorities, tasks]) => {
         if (!alive) return;
-        setDctx(d);
         const activeGoals = (goals || []).filter((g) => g.status === "active");
         setBase({ goals: goals || [], priorities: priorities || [], tasks: tasks || [] });
         if (_rmGoalId && activeGoals.some((g) => String(g.id) === String(_rmGoalId))) {
@@ -78,14 +45,8 @@ export default function RoadmapPage() {
   }, []);
 
   const loadRoadmap = useCallback(async (gid) => {
-    const [rm, v2r] = await Promise.all([
-      api("/roadmap" + (gid ? `?goal_id=${gid}` : "")).catch(() => ({ goal: null, stages: {}, progress_percent: 0 })),
-      gid ? api(`/roadmap/v2?goal_id=${gid}`).catch(() => null) : null,
-    ]);
+    const rm = await api("/roadmap" + (gid ? `?goal_id=${gid}` : "")).catch(() => ({ goal: null, stages: {}, progress_percent: 0 }));
     setRoadmap(rm);
-    setV2(v2r);
-    setAdapt(null);
-    setAdaptChecks([]);
   }, []);
 
   useEffect(() => { if (base) loadRoadmap(goalId); }, [base, goalId]);
@@ -157,36 +118,6 @@ export default function RoadmapPage() {
     if (!window.confirm(status === "done" ? "Mark this goal as done?" : "Cancel this goal? Its roadmap items will be removed.")) return;
     try { await api(`/roadmap/goals/${goalId}`, { method: "PATCH", body: JSON.stringify({ status }) }); if (status === "cancelled") { _rmGoalId = null; setGoalId(null); } toast(status === "done" ? "Goal complete — congratulations 🎉" : "Goal cancelled"); await reload({ keepScroll: false }); }
     catch (ex) { toast(ex.message); }
-  };
-
-  const m3Action = async (t, action) => {
-    setBusyBtns((b) => ({ ...b, [`${t.id}-${action}`]: true }));
-    try {
-      await api(`/roadmap/v2/tasks/${t.id}/${action}`, { method: "POST" });
-      await reload({ msg: action === "complete" ? "Nice — task completed ✓" : action === "skip" ? "Task skipped" : "Task started 🚀" });
-    } catch (ex) { toast(ex.message); }
-    setBusyBtns((b) => ({ ...b, [`${t.id}-${action}`]: false }));
-  };
-
-  const previewAdapt = async () => {
-    setAdaptBusy(true);
-    try {
-      const data = await api(`/roadmap/v2/adaptations/preview?goal_id=${goalId}`, { method: "POST", body: JSON.stringify({}) });
-      _adaptActions = data.recommended_actions || [];
-      setAdapt(data);
-      setAdaptChecks(_adaptActions.map(() => true));
-      toast("Novi reviewed your plan ✨");
-    } catch (ex) { toast(ex.message); }
-    finally { setAdaptBusy(false); }
-  };
-
-  const applyAdapt = async () => {
-    const chosen = _adaptActions.filter((_, i) => adaptChecks[i]);
-    if (!chosen.length) { toast("Select at least one suggestion"); return; }
-    try {
-      await api(`/roadmap/v2/adaptations/apply?goal_id=${goalId}`, { method: "POST", body: JSON.stringify({ actions: chosen }) });
-      await reload({ msg: "Plan adapted ✨", keepScroll: false });
-    } catch (ex) { toast(ex.message); }
   };
 
   const toggleTask = async (id, checked) => {
@@ -278,10 +209,6 @@ export default function RoadmapPage() {
       </div>
     </div>
   ));
-
-  const sched = v2 && v2.roadmap;
-  const milestones = sched ? (sched.milestones || []).slice().sort((a, b) => a.order_index - b.order_index) : [];
-  const schedPct = sched ? Math.round(sched.progress_percentage || 0) : 0;
 
   return (
     <>
@@ -407,85 +334,6 @@ export default function RoadmapPage() {
           ) : (
             <div className="card"><h3>Set your first goal to start your map</h3><p className="small muted mt">Tap <b>＋ New goal</b> above, then generate its roadmap.</p></div>
           ))}
-
-          {/* m3 scheduled plan */}
-          {goal ? (
-          <div className="card" id="m3-plan">
-            <div className="between">
-              <div style={{ minWidth: 0 }}>
-                <h2>🗓️ Scheduled plan</h2>
-                {sched
-                  ? <div className="small muted mt">{esc(sched.title)} · {esc(m3DateRange(sched.start_date, sched.target_date))}</div>
-                  : <span className="pill" style={{ marginTop: 8 }}>not generated</span>}
-              </div>
-              {sched ? <Ring pct={schedPct} label="" size={52} /> : null}
-            </div>
-            {goal && !sched ? (
-              <p className="small muted mt">Generate a roadmap above to get an AI plan with real calendar dates, then start, complete or skip tasks right here.</p>
-            ) : null}
-            {sched ? (
-              <>
-                <div className="progress-track mt"><div className="progress-fill" style={{ width: `${schedPct}%` }} /></div>
-                <div className="m3-plan mt">
-                  {milestones.length ? milestones.map((m) => {
-                    const mTasks = (m.tasks || []).slice().sort((a, b) => a.order_index - b.order_index);
-                    const mp = m.total_tasks ? Math.round(((m.completed_tasks || 0) / m.total_tasks) * 100) : 0;
-                    return (
-                      <div className="ms-block" key={m.id}>
-                        <div className="between">
-                          <div style={{ minWidth: 0 }}>
-                            <b>{esc(m.title)}</b>
-                            <div className="small muted">{esc(m3DateRange(m.start_date, m.target_date))}</div>
-                          </div>
-                          <span className={`pill ${mp === 100 ? "good" : "mid"}`}>{m.completed_tasks || 0}/{m.total_tasks || 0}</span>
-                        </div>
-                        <div className="tl-items">{mTasks.length ? mTasks.map((t) => m3TaskRow(t, m3Action)) : <p className="small muted">No tasks in this milestone.</p>}</div>
-                      </div>
-                    );
-                  }) : <p className="small muted">The plan has no milestones yet.</p>}
-                </div>
-                <div className="m3-adapt mt">
-                  <div className="between">
-                    <div style={{ minWidth: 0 }}>
-                      <h3>✨ Adapt with AI</h3>
-                      <div className="small muted">Novi reviews your progress and suggests plan changes you approve.</div>
-                    </div>
-                    <button className="btn-ghost small" id="adapt-preview" disabled={adaptBusy} onClick={previewAdapt}>{adaptBusy ? "Thinking…" : "Preview"}</button>
-                  </div>
-                  <div id="adapt-box" className="mt">
-                    {adapt ? (
-                      <>
-                        <div className="adapt-note">
-                          <b>{esc(adapt.assessment || "Coaching insight")}</b>
-                          <p className="small muted mt">{esc(adapt.reasoning || "")}</p>
-                        </div>
-                        {(adapt.recommended_actions || []).length ? (
-                          <>
-                            <div className="adapt-actions mt">
-                              {(adapt.recommended_actions || []).map((a, i) => (
-                                <label className="adapt-action" key={i}>
-                                  <input type="checkbox" checked={!!adaptChecks[i]} onChange={(e) => setAdaptChecks((c) => c.map((v, j) => (j === i ? e.target.checked : v)))} />
-                                  <div style={{ minWidth: 0 }}>
-                                    <b>{esc(m3AdaptLabel(a))}</b>
-                                    {a.reason ? <div className="small muted">{esc(a.reason)}</div> : null}
-                                  </div>
-                                </label>
-                              ))}
-                            </div>
-                            <div className="row mt">
-                              <button className="btn small" id="adapt-apply" onClick={applyAdapt}>Apply selected</button>
-                              <button className="btn-ghost small" id="adapt-cancel" onClick={() => setAdapt(null)}>Dismiss</button>
-                            </div>
-                          </>
-                        ) : <p className="small muted mt">No changes suggested — your plan looks on track.</p>}
-                      </>
-                    ) : null}
-                  </div>
-                </div>
-              </>
-            ) : null}
-          </div>
-          ) : null}
         </div>
 
         <div className="rm-side">

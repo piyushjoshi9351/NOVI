@@ -4,15 +4,16 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import {
-  BookMarked, Briefcase, CalendarCheck, Dna, GraduationCap, LayoutDashboard, LogOut, Map, MessageCircle, Moon, Rocket, Sparkles, Sun, UserRound,
+  BookMarked, Briefcase, CalendarCheck, Dna, GraduationCap, LayoutDashboard, LogOut, Map, MessageCircle, Moon, Sparkles, Sun, UserRound,
 } from "lucide-react";
 import { AuthProvider, useAuth } from "./auth";
 import { applyTheme, bootAppearance, getTheme, setPrefKey, warmAllRoutes } from "./api";
 import { Loader, toast, ToastHost } from "./ui";
 import AuthPage from "./views/AuthPage";
+import OnboardingPage from "./views/OnboardingPage";
 
 const studentNav = [
-  ["dashboard", "Dashboard"], ["onboarding", "Onboarding"], ["chat", "Chat"], ["dna", "My DNA"],
+  ["dashboard", "Dashboard"], ["chat", "Chat"], ["dna", "My DNA"],
   ["careers", "Careers"], ["universities", "Universities"],
   ["roadmap", "Roadmap"], ["passport", "Passport"], ["checkin", "Check-in"],
   ["profile", "Profile"],
@@ -21,7 +22,6 @@ const parentNav = [["overview", "Overview"], ["advisor", "Parent Advisor"]];
 
 const NAV_ICONS = {
   dashboard: LayoutDashboard,
-  onboarding: Rocket,
   chat: MessageCircle,
   dna: Dna,
   careers: Briefcase,
@@ -113,13 +113,24 @@ function ScrollToTop() {
 }
 
 export function RootShell({ children }) {
-  const { token, ready } = useAuth();
+  const { token, user, ready } = useAuth();
   const pathname = usePathname();
+  const router = useRouter();
   useEffect(() => {
     // appearance + route pre-warm only ever make sense in the browser
     bootAppearance();
     warmAllRoutes();
   }, []);
+
+  // A student who hasn't finished onboarding sees ONLY the onboarding flow —
+  // no dashboard, no nav, no other route — until it is complete.
+  // (Declared before the early returns so every render calls the same hooks.)
+  const onboardingPending = user && user.role !== "parent" && !user.onboarding_completed;
+  useEffect(() => {
+    if (!onboardingPending) return;
+    if (pathname !== "/onboarding") router.replace("/onboarding");
+  }, [onboardingPending, pathname, router]);
+
   const isChat = pathname === "/chat";
 
   if (!ready) return (
@@ -135,6 +146,20 @@ export function RootShell({ children }) {
       <ToastHost />
     </div>
   );
+
+  // A student who hasn't finished onboarding sees ONLY the onboarding flow —
+  // no dashboard, no nav, no other route — until it is complete.
+  if (onboardingPending) {
+    return (
+      <div className="app app-onboarding">
+        <ScrollToTop />
+        <main id="view" className="view">
+          <OnboardingPage />
+        </main>
+        <ToastHost />
+      </div>
+    );
+  }
 
   return (
     <div className="app">

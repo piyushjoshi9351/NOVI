@@ -80,17 +80,15 @@ http://localhost:8000
 novi_tech_app/
 ├── docker-compose.yml      # Docker services (MySQL, Letta, Redis)
 ├── backend/
-│   ├── main.py            # FastAPI application
-│   ├── database.py        # Database connection
-│   ├── models.py          # SQLAlchemy models
-│   ├── schemas.py         # Pydantic schemas
-│   ├── services/
-│   │   ├── letta_service.py   # Letta AI memory integration
-│   │   ├── gemini_service.py  # Gemini API integration
-│   │   └── auth_service.py    # Authentication
-│   ├── init.sql           # Database schema
+│   ├── app/               # FastAPI application (run: `uvicorn app.main:app`)
+│   │   ├── api/           # Routers (auth, google_auth, chat, ...)
+│   │   ├── models/        # SQLAlchemy models
+│   │   ├── schemas/       # Pydantic schemas
+│   │   ├── services/      # Business logic
+│   │   └── db/            # Seeds + migration runner
+│   ├── migrations/        # SQL migrations (0001_, 0002_, ...)
 │   ├── requirements.txt   # Python dependencies
-│   └── .env              # Environment variables
+│   └── .env               # Environment variables
 ├── frontend/
 │   ├── app/                # Next.js (App Router) routes
 │   ├── src/views/          # Page components
@@ -136,7 +134,7 @@ The app will fall back to Gemini directly if Letta is not available.
 ### Port Already in Use
 Change the port in the uvicorn command:
 ```bash
-uvicorn main:app --port 8001
+uvicorn app.main:app --port 8001
 ```
 
 ## Next Steps

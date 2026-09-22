@@ -20,6 +20,9 @@ class RoleBase(ORMModel):
     avatar: str | None = None
     letta_agent_id: str | None = None
     created_at: datetime | None = None
+    onboarding_step: str | None = None
+    onboarding_completed_at: datetime | None = None
+    onboarding_completed: bool = False
 
 
 def dt_or_none(value: datetime | None) -> str | None:
