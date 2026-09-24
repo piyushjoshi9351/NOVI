@@ -1,5 +1,9 @@
+import hashlib
+import hmac
+import logging
 import secrets
-from urllib.parse import quote, urlencode
+import time
+from urllib.parse import quote, unquote, urlencode
 
 import httpx
 from fastapi import HTTPException
@@ -11,6 +15,8 @@ from app.core.config import settings
 from app.models.user import User, UserRole
 from app.schemas.auth import LoginRequest, SignupRequest, UserUpdate
 from app.services.providers import memory
+
+logger = logging.getLogger("novi.auth")
 
 
 async def signup(data: SignupRequest, db: Session) -> User:
@@ -90,14 +96,95 @@ def google_is_configured() -> bool:
     return bool(settings.GOOGLE_CLIENT_ID and settings.GOOGLE_CLIENT_SECRET and settings.GOOGLE_REDIRECT_URI)
 
 
-def build_google_authorize_url(state: str, next_path: str) -> str:
+def is_safe_next_path(path: str) -> bool:
+    return bool(path) and path.startswith("/") and not path.startswith("//") and ".." not in path
+
+
+def generate_oauth_state(next_path: str = "/login") -> str:
+    """Generate a tamper-proof, timestamped OAuth state string signed with SECRET_KEY.
+
+    Format: {nonce}:{timestamp}:{safe_next}:{signature}
+    Works across decoupled frontend/backend domains without depending on browser cookies.
+    """
+    nonce = secrets.token_urlsafe(16)
+    timestamp = str(int(time.time()))
+    safe_next = quote(next_path if is_safe_next_path(next_path) else "/login", safe="")
+    payload = f"{nonce}:{timestamp}:{safe_next}"
+    signature = hmac.new(
+        settings.SECRET_KEY.encode("utf-8"),
+        payload.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+    return f"{payload}:{signature}"
+
+
+def verify_oauth_state(state: str, cookie_state: str | None = None) -> tuple[bool, str, str]:
+    """Verify the OAuth state parameter.
+
+    Returns (is_valid, error_code, next_path).
+    Supports:
+    1. Cryptographically signed state (HMAC-SHA256): works seamlessly across decoupled domains
+       and reverse proxies (e.g. Vercel frontend -> Render backend) without cookie dependency.
+    2. Legacy cookie fallback: if old state format is received and cookie matches.
+    """
+    if not state:
+        return False, "google_oauth_requires_code", "/login"
+
+    parts = state.split(":")
+    # Signed format: nonce:timestamp:safe_next:signature
+    if len(parts) == 4:
+        nonce, timestamp_str, next_quoted, signature = parts
+        payload = f"{nonce}:{timestamp_str}:{next_quoted}"
+        expected_sig = hmac.new(
+            settings.SECRET_KEY.encode("utf-8"),
+            payload.encode("utf-8"),
+            hashlib.sha256,
+        ).hexdigest()
+
+        if not hmac.compare_digest(signature, expected_sig):
+            logger.warning("google OAuth state signature mismatch (CSRF guard)")
+            return False, "google_oauth_verification_failed", "/login"
+
+        try:
+            ts = int(timestamp_str)
+        except ValueError:
+            return False, "google_oauth_verification_failed", "/login"
+
+        now = int(time.time())
+        # Expire state after 10 minutes (600s), with 60s clock skew tolerance
+        if (now - ts) > 600 or ts > (now + 60):
+            logger.warning("google OAuth state expired (issued at %s, now %s)", ts, now)
+            return False, "google_oauth_expired", "/login"
+
+        next_path = unquote(next_quoted)
+        if not is_safe_next_path(next_path):
+            next_path = "/login"
+        return True, "", next_path
+
+    # Fallback to legacy cookie check (nonce:next_path)
+    if len(parts) >= 2:
+        csrf = parts[0]
+        next_path = unquote(":".join(parts[1:]))
+        if not is_safe_next_path(next_path):
+            next_path = "/login"
+        if not cookie_state:
+            return False, "google_oauth_expired", next_path
+        if csrf != cookie_state:
+            return False, "google_oauth_verification_failed", next_path
+        return True, "", next_path
+
+    return False, "google_oauth_verification_failed", "/login"
+
+
+def build_google_authorize_url(state: str, next_path: str = "") -> str:
+    state_val = state if (":" in state or not next_path) else f"{state}:{quote(next_path, safe='/')}"
     query = urlencode({
         "client_id": settings.GOOGLE_CLIENT_ID,
         "redirect_uri": settings.GOOGLE_REDIRECT_URI,
         "response_type": "code",
         "scope": "openid email profile",
         "access_type": "online",
-        "state": f"{state}:{quote(next_path, safe='/')}",
+        "state": state_val,
         "prompt": "select_account",
     })
     return f"{GOOGLE_AUTHORIZE_URL}?{query}"
@@ -130,8 +217,10 @@ async def _exchange_google_code(code: str) -> dict:
         async with httpx.AsyncClient(timeout=20) as client:
             resp = await client.post(GOOGLE_TOKEN_URL, data=payload)
     except httpx.HTTPError as exc:
+        logger.error("Google token exchange HTTP error: %s", exc)
         raise HTTPException(status_code=502, detail="Google token exchange failed") from exc
     if resp.status_code != 200:
+        logger.error("Google token exchange failed: status=%s body=%s", resp.status_code, resp.text)
         raise HTTPException(status_code=401, detail="Google token exchange failed")
     return resp.json()
 
@@ -142,11 +231,14 @@ async def _verify_google_id_token(id_token: str) -> dict:
         async with httpx.AsyncClient(timeout=20) as client:
             resp = await client.get(GOOGLE_TOKENINFO_URL, params={"id_token": id_token})
     except httpx.HTTPError as exc:
+        logger.error("Google token verification HTTP error: %s", exc)
         raise HTTPException(status_code=502, detail="Google token verification failed") from exc
     if resp.status_code != 200:
+        logger.error("Google token verification failed: status=%s body=%s", resp.status_code, resp.text)
         raise HTTPException(status_code=401, detail="Invalid Google token")
     info = resp.json()
     if info.get("aud") != settings.GOOGLE_CLIENT_ID:
+        logger.error("Google token audience mismatch: aud=%s client_id=%s", info.get("aud"), settings.GOOGLE_CLIENT_ID)
         raise HTTPException(status_code=401, detail="Google token audience mismatch")
     return info
 
