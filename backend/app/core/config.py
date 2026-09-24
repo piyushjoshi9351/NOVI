@@ -49,9 +49,11 @@ class Settings(BaseSettings):
     GEMINI_MODEL: str = "gemini-3.6-flash"
     GEMINI_SYNC_DELAY: float = 4.0  # seconds between calls (free-tier friendly)
 
-    # --- Local LLM fallback (keeps every AI feature working when Gemini is out of quota) ---
-    OLLAMA_BASE_URL: str = "http://localhost:11434/v1"
-    OLLAMA_MODEL: str = "llama3.2:3b"
+    # --- Ollama Cloud fallback (keeps every AI feature working when Gemini is out of quota) ---
+    # Ollama Cloud exposes an OpenAI-compatible API at https://ollama.com/v1
+    OLLAMA_BASE_URL: str = "https://ollama.com/v1"
+    OLLAMA_MODEL: str = "gpt-oss:20b"
+    OLLAMA_API_KEY: str = ""  # set in .env — used as Bearer token for Ollama Cloud
 
     # --- Letta memory (optional; falls back to Gemini-only when unreachable) ---
     LETTA_BASE_URL: str = "http://localhost:8283"

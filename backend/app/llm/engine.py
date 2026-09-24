@@ -1,8 +1,9 @@
-"""Resilient LLM engine: Gemini first, local Ollama fallback.
+"""Resilient LLM engine: Gemini first, Ollama Cloud fallback.
 
 Every AI feature in NOVI (DNA, matches, readiness, roadmaps, check-ins, memory
-extraction) flows through this so that a exhausted/absent Gemini quota never
-breaks the product — the local Ollama model keeps everything working offline.
+extraction) flows through this so that an exhausted/absent Gemini quota never
+breaks the product — Ollama Cloud (https://ollama.com/v1) keeps everything
+working via its OpenAI-compatible API with Bearer key auth.
 """
 
 import json
@@ -30,9 +31,17 @@ class OllamaProvider:
         messages.append({"role": "user", "content": prompt})
         try:
             async with httpx.AsyncClient(timeout=180.0) as client:
+                headers = {}
+                if settings.OLLAMA_API_KEY:
+                    headers["Authorization"] = f"Bearer {settings.OLLAMA_API_KEY}"
                 resp = await client.post(
                     f"{self.base_url}/chat/completions",
-                    json={"model": self.model, "messages": messages, "temperature": 0.4},
+                    headers=headers,
+                    json={
+                        "model": self.model,
+                        "messages": messages,
+                        "temperature": 0.4,
+                    },
                 )
                 resp.raise_for_status()
                 text = (resp.json()["choices"][0]["message"]["content"] or "").strip()
@@ -49,8 +58,12 @@ class OllamaProvider:
         messages.append({"role": "user", "content": prompt})
         try:
             async with httpx.AsyncClient(timeout=240.0) as client:
+                headers = {}
+                if settings.OLLAMA_API_KEY:
+                    headers["Authorization"] = f"Bearer {settings.OLLAMA_API_KEY}"
                 resp = await client.post(
                     f"{self.base_url}/chat/completions",
+                    headers=headers,
                     json={
                         "model": self.model,
                         "messages": messages,
